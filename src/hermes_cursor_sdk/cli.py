@@ -177,30 +177,44 @@ def cmd_status() -> int:
 
 def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
     settings = load_settings()
+    hermes_home = resolve_hermes_home(profile=profile)
+    profile_env = read_env_file(hermes_home / ".env")
     provider = provider_status(profile=profile)
+    bridge_token = (
+        settings.bridge_token
+        or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or ""
+    ).strip()
+    bridge_cwd = settings.bridge_cwd or profile_env.get("HERMES_CURSOR_BRIDGE_CWD") or None
+    bridge_url = (
+        os.environ.get("HERMES_CURSOR_BASE_URL")
+        or profile_env.get("HERMES_CURSOR_BASE_URL")
+        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
+    ).rstrip("/")
     issues: list[str] = []
-    if not settings.bridge_token:
+    if not bridge_token:
         issues.append("HERMES_CURSOR_BRIDGE_TOKEN is not set")
     if settings.bridge_expose:
         issues.append("bridge is configured for non-loopback exposure")
     if provider_mode and not provider["installed"]:
         issues.append("provider shim is not installed (run: hermes-cursor setup --cwd …)")
-    if provider_mode and settings.bridge_cwd is None:
+    if provider_mode and not bridge_cwd:
         issues.append("HERMES_CURSOR_BRIDGE_CWD is not set")
 
     print("Hermes Cursor SDK doctor")
     print(f"version: {__version__}")
-    print(f"hermes_home: {resolve_hermes_home(profile=profile)}")
-    print(f"bridge_url: http://{settings.bridge_host}:{settings.bridge_port}/v1")
+    print(f"hermes_home: {hermes_home}")
+    print(f"bridge_url: {bridge_url}")
     print(f"provider_installed: {provider['installed']}")
     print(f"service_installed: {service_status()['installed']}")
 
     if provider_mode:
-        profile = CursorProfile()
-        print(f"provider_name: {profile.name}")
-        print(f"provider_display_name: {profile.display_name}")
-        print(f"provider_base_url: http://{settings.bridge_host}:{settings.bridge_port}/v1")
-        print(f"provider_env_vars: {', '.join(profile.env_vars)}")
+        cursor_profile = CursorProfile()
+        print(f"provider_name: {cursor_profile.name}")
+        print(f"provider_display_name: {cursor_profile.display_name}")
+        print(f"provider_base_url: {bridge_url}")
+        print(f"provider_env_vars: {', '.join(cursor_profile.env_vars)}")
 
     if issues:
         print("issues:")
@@ -369,7 +383,7 @@ def upsert_env_file(path: Path, values: Mapping[str, str]) -> None:
     out: list[str] = []
     for line in existing:
         if line and not line.startswith("#") and "=" in line:
-            key = line.split("=", 1)[0]
+            key = line.split("=", 1)[0].strip()
             if key in keys:
                 out.append(f"{key}={values[key]}")
                 seen.add(key)
@@ -615,9 +629,11 @@ def bridge_program_args() -> list[str]:
     """Return argv for the bridge process, including --env-file when present."""
 
     args = [sys.executable, "-m", "hermes_cursor_sdk.bridge"]
-    env_file = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
-    if env_file.is_file():
-        args.extend(["--env-file", str(env_file)])
+    settings = load_settings()
+    env_file = settings.bridge_env_file or DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
+    env_path = Path(env_file).expanduser().resolve()
+    if env_path.is_file():
+        args.extend(["--env-file", str(env_path)])
     return args
 
 
