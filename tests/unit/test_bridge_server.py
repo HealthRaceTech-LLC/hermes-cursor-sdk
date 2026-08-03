@@ -147,6 +147,15 @@ def test_send_stateless_fallbacks() -> None:
         server.send_stateless(object(), payload, cursor, messages, False)
 
 
+def test_request_params_prefers_max_completion_tokens() -> None:
+    params = server.request_params(
+        {"max_tokens": 111, "max_completion_tokens": 222, "reasoning_effort": "max"},
+        {"params": {}},
+    )
+    assert params["max_tokens"] == 222
+    assert params["reasoning_effort"] == "max"
+
+
 def test_models_payload_falls_back_to_default_model() -> None:
     class Client:
         def list_models(self) -> list[dict[str, Any]]:

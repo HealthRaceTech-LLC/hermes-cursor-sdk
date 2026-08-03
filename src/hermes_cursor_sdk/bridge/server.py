@@ -504,10 +504,15 @@ def parse_cursor_extension(value: Any) -> dict[str, Any]:
 def request_params(payload: Mapping[str, Any], cursor: Mapping[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
     for key in CURSOR_MODEL_PARAM_FIELDS:
-        if key not in payload:
+        if key not in payload or key in {"max_tokens", "max_completion_tokens"}:
             continue
-        target = "max_tokens" if key == "max_completion_tokens" else key
-        params[target] = payload[key]
+        params[key] = payload[key]
+    # Both OpenAI names map onto Cursor `max_tokens`. Prefer the newer
+    # `max_completion_tokens` when both are present.
+    if "max_completion_tokens" in payload:
+        params["max_tokens"] = payload["max_completion_tokens"]
+    elif "max_tokens" in payload:
+        params["max_tokens"] = payload["max_tokens"]
     params.update(dict(cursor.get("params") or {}))
     return params
 
