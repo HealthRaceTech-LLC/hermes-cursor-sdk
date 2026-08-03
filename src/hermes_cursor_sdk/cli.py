@@ -153,7 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 install_service_unit=not args.no_service,
                 load_service=args.load_service,
             )
-    except CLIError as exc:
+    except (CLIError, ConfigurationError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -163,13 +163,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def cmd_status() -> int:
     settings = load_settings()
+    hermes_home = resolve_hermes_home()
+    profile_env = read_env_file(hermes_home / ".env")
     provider = provider_status()
     service = service_status()
-    print(f"hermes_home: {resolve_hermes_home()}")
-    print(f"bridge_url: http://{settings.bridge_host}:{settings.bridge_port}/v1")
+    bridge_token = (
+        settings.bridge_token
+        or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or ""
+    ).strip()
+    bridge_cwd = settings.bridge_cwd or profile_env.get("HERMES_CURSOR_BRIDGE_CWD") or ""
+    bridge_url = (
+        os.environ.get("HERMES_CURSOR_BASE_URL")
+        or profile_env.get("HERMES_CURSOR_BASE_URL")
+        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
+    ).rstrip("/")
+    print(f"hermes_home: {hermes_home}")
+    print(f"bridge_url: {bridge_url}")
     print(f"bridge_expose: {settings.bridge_expose}")
-    print(f"bridge_token_configured: {bool(settings.bridge_token)}")
-    print(f"bridge_cwd: {settings.bridge_cwd or ''}")
+    print(f"bridge_token_configured: {bool(bridge_token)}")
+    print(f"bridge_cwd: {bridge_cwd}")
     print(f"provider: {provider['state']} ({provider['path']})")
     print(f"service: {service['state']} ({service['path']})")
     return 0
@@ -250,13 +264,14 @@ def cmd_setup(
     existing_bridge = parse_bridge_env_file(bridge_env_path) if bridge_env_path.is_file() else {}
     existing_hermes = read_env_file(hermes_home / ".env")
 
+    # Prefer process env, then the target profile .env, then shared bridge.env.
     api_key = (
         os.environ.get("HERMES_CURSOR_API_KEY")
         or os.environ.get("CURSOR_API_KEY")
-        or existing_bridge.get("HERMES_CURSOR_API_KEY")
-        or existing_bridge.get("CURSOR_API_KEY")
         or existing_hermes.get("HERMES_CURSOR_API_KEY")
         or existing_hermes.get("CURSOR_API_KEY")
+        or existing_bridge.get("HERMES_CURSOR_API_KEY")
+        or existing_bridge.get("CURSOR_API_KEY")
         or ""
     ).strip()
     if not api_key:
@@ -268,8 +283,8 @@ def cmd_setup(
     bridge_token = (
         token
         or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
-        or existing_bridge.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or existing_hermes.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or existing_bridge.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or ""
     ).strip()
     if not bridge_token:
@@ -385,6 +400,9 @@ def upsert_env_file(path: Path, values: Mapping[str, str]) -> None:
         if line and not line.startswith("#") and "=" in line:
             key = line.split("=", 1)[0].strip()
             if key in keys:
+                if key in seen:
+                    # Drop duplicate assignments for keys we are upserting.
+                    continue
                 out.append(f"{key}={values[key]}")
                 seen.add(key)
                 continue
