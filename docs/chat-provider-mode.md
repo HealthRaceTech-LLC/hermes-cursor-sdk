@@ -4,14 +4,28 @@ Run Cursor as Hermes' chat brain through a local OpenAI-compatible bridge. Herme
 
 ## Operator checklist
 
-1. Start `hermes-cursor-bridge` (loopback only).
-2. Run `hermes-cursor provider install`, restart Hermes/gateway, then `hermes model` → Cursor + pick a model.
-3. Disable Hermes toolsets for that session (file/terminal/etc.) so only Cursor acts on the repo.
-4. Pin every Hermes auxiliary slot to a normal provider — not `main/auto` when Cursor is the main model.
-5. Set `HERMES_CURSOR_BRIDGE_CWD` to the target project.
-6. Run `hermes-cursor doctor --provider-mode`.
-7. Do **not** use for PHI workloads.
-8. Confirm `hermes doctor` authenticates to the bridge `/models` endpoint.
+Recommended one-shot setup (installs into the **active Hermes profile** home — e.g. `~/.hermes/profiles/co-cto` — so Desktop can see the provider):
+
+```bash
+# CURSOR_API_KEY must already be in your shell / Hermes .env
+hermes-cursor setup --cwd /absolute/path/to/project --profile co-cto --load-service
+# restart Hermes Desktop / gateway
+hermes-cursor doctor --provider-mode
+```
+
+Then in Hermes Desktop (or `hermes model`): select **Cursor (SDK bridge)** and a model from `/v1/models`.
+
+Manual steps (equivalent):
+
+1. Write `~/.hermes/cursor-sdk/bridge.env` (`0600`) with `CURSOR_API_KEY`, `HERMES_CURSOR_BRIDGE_TOKEN`, `HERMES_CURSOR_BRIDGE_CWD`.
+2. Put the same `HERMES_CURSOR_BRIDGE_TOKEN` / `HERMES_CURSOR_BASE_URL` into the **profile** `.env` (not only `~/.hermes/.env`).
+3. Start `hermes-cursor-bridge` (loopback only) or `hermes-cursor service install --load` via setup.
+4. Run `hermes-cursor provider install --profile <name>`, restart Hermes/gateway, then pick Cursor.
+5. Disable Hermes toolsets for that session (file/terminal/etc.) so only Cursor acts on the repo.
+6. Pin every Hermes auxiliary slot to a normal provider — not `main/auto` when Cursor is the main model.
+7. Run `hermes-cursor doctor --provider-mode`.
+8. Do **not** use for PHI workloads.
+9. Confirm `hermes doctor` authenticates to the bridge `/models` endpoint.
 
 ## Important non-parity
 
