@@ -17,6 +17,9 @@ from hermes_cursor_sdk.config import CursorConfig
 ProviderProfile: Any
 _register_provider: Any
 try:  # pragma: no cover - depends on Hermes runtime.
+    # Hermes keeps ProviderProfile on providers.base and register_provider on
+    # the providers package root (not on providers.base).
+    _providers = importlib.import_module("providers")
     _providers_base = importlib.import_module("providers.base")
 except ImportError:  # pragma: no cover - exercised in tests without Hermes.
 
@@ -35,7 +38,7 @@ except ImportError:  # pragma: no cover - exercised in tests without Hermes.
         return profile
 else:
     ProviderProfile = _providers_base.ProviderProfile
-    _register_provider = _providers_base.register_provider
+    _register_provider = _providers.register_provider
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8787/v1"
