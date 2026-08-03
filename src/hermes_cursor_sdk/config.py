@@ -237,7 +237,9 @@ def _env_settings(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     return result
 
 
-def load_settings(path: str | Path | None = None, *, env: Mapping[str, str] | None = None) -> Settings:
+def load_settings(
+    path: str | Path | None = None, *, env: Mapping[str, str] | None = None
+) -> Settings:
     """Load settings from TOML, then overlay environment variables."""
 
     data = _toml_settings()

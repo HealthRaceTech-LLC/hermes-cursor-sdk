@@ -441,7 +441,9 @@ class CursorSDKClient:
             raise BusyError("Agent has an active run")
         api_key = require_api_key(self.settings)
         cwd_path = self._validate_cwd(cwd or stored.get("cwd")) if runtime == "local" else None
-        model_selection = self._resolve_model(model, params) if model or params else stored.get("model")
+        model_selection = (
+            self._resolve_model(model, params) if model or params else stored.get("model")
+        )
         with (
             self._launch_bridge(cwd_path, api_key)
             if runtime == "local"
