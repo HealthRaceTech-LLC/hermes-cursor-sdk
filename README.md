@@ -1,5 +1,3 @@
-Code is being re-landed via stacked PRs; full tree also at branch archive/v0.1-monolith / tag archive/v0.1-monolith.
-
 # hermes-cursor-sdk
 
 Unofficial, community-maintained [Hermes](https://github.com/NousResearch/hermes-agent) plugin that wraps the Python [Cursor SDK](https://cursor.com/docs/sdk/python).
