@@ -23,20 +23,27 @@ from uuid import uuid4
 from hermes_cursor_sdk.client import CursorClient, CursorSDKClient
 from hermes_cursor_sdk.config import Settings, load_settings
 from hermes_cursor_sdk.errors import map_exception
-from hermes_cursor_sdk.results import extract_assistant_text
+from hermes_cursor_sdk.results import extract_assistant_text, to_openai_usage
 
 LOGGER = logging.getLogger("hermes_cursor_sdk.bridge")
 
-OPENAI_PARAM_FIELDS = {
+# OpenAI chat fields that map onto Cursor ModelSelection params. Sampling knobs
+# like temperature/top_p are intentionally excluded — Hermes often sends them,
+# but Cursor catalog validation rejects unknown model params.
+CURSOR_MODEL_PARAM_FIELDS = {
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning_effort",
+}
+
+# Kept for reference / older callers; request_params no longer forwards these.
+OPENAI_PARAM_FIELDS = CURSOR_MODEL_PARAM_FIELDS | {
     "frequency_penalty",
     "logit_bias",
     "logprobs",
-    "max_completion_tokens",
-    "max_tokens",
     "metadata",
     "n",
     "presence_penalty",
-    "reasoning_effort",
     "response_format",
     "seed",
     "stop",
@@ -245,13 +252,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         self._require_auth()
         payload = self._read_json_body()
-        if "tools" in payload or "tool_choice" in payload:
-            raise BridgeError(
-                HTTPStatus.BAD_REQUEST,
-                "Cursor bridge does not support tools or tool_choice",
-                code="unsupported_tools",
-                param="tools",
-            )
+        # Hermes Desktop/CLI always attach tool schemas. Cursor runs its own
+        # agent tools inside the SDK; the bridge cannot emulate Hermes
+        # tool_calls. Strip rather than 400 so Phase 2 chat works when
+        # operators have not emptied platform_toolsets yet.
+        payload = strip_unsupported_chat_fields(payload)
 
         cursor = parse_cursor_extension(payload.get("cursor"))
         messages = payload.get("messages")
@@ -372,30 +377,38 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         return int(status)
 
     def _send_stream(self, response: Any, payload: Mapping[str, Any]) -> int:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.close_connection = True
-
+        # Buffer the full SSE body and set Content-Length. Hermes' OpenAI
+        # client was observing http_status=200 with bytes=0 against
+        # Connection:close streams that only flushed after the Cursor run.
         completion_id = f"chatcmpl-{uuid4().hex}"
         created = int(time.time())
         model = str(payload.get("model") or "cursor")
         chunks = response if is_stream_response(response) else [response]
 
+        lines: list[bytes] = []
+        first_content = True
+        # Prefer the latest chunk that carries usage — earlier chunks may have
+        # token counts even when the final content chunk does not.
+        usage = openai_usage_from_response(response)
         for chunk in chunks:
+            chunk_usage = openai_usage_from_response(chunk)
+            if chunk_usage is not None:
+                usage = chunk_usage
             text = extract_text(chunk)
             if not text:
                 continue
+            delta: dict[str, Any] = {"content": text}
+            if first_content:
+                delta = {"role": "assistant", "content": text}
+                first_content = False
             event = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
             }
-            self._write_sse(event)
+            lines.append(_sse_data(event))
 
         done = {
             "id": completion_id,
@@ -404,14 +417,53 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             "model": model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
-        self._write_sse(done)
-        self.wfile.write(b"data: [DONE]\n\n")
+        lines.append(_sse_data(done))
+
+        # Hermes streams with stream_options.include_usage=true and scrapes a
+        # trailing empty-choices chunk for context-meter prompt_tokens.
+        if usage is not None:
+            usage_event = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [],
+                "usage": usage,
+            }
+            lines.append(_sse_data(usage_event))
+
+        lines.append(b"data: [DONE]\n\n")
+        body = b"".join(lines)
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.close_connection = True
+        self.wfile.write(body)
         self.wfile.flush()
         return int(HTTPStatus.OK)
 
-    def _write_sse(self, event: Mapping[str, Any]) -> None:
-        self.wfile.write(f"data: {json.dumps(event, separators=(',', ':'))}\n\n".encode())
-        self.wfile.flush()
+
+def _sse_data(event: Mapping[str, Any]) -> bytes:
+    return f"data: {json.dumps(event, separators=(',', ':'))}\n\n".encode()
+
+
+def strip_unsupported_chat_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop Hermes tool-calling fields Cursor's agent API cannot honor."""
+
+    cleaned = dict(payload)
+    removed = [key for key in ("tools", "tool_choice") if key in cleaned]
+    for key in removed:
+        cleaned.pop(key, None)
+    if removed:
+        LOGGER.warning(
+            "stripped unsupported chat fields from completion request",
+            extra={"event": "stripped_chat_fields", "fields": removed},
+        )
+    return cleaned
 
 
 def parse_cursor_extension(value: Any) -> dict[str, Any]:
@@ -450,7 +502,17 @@ def parse_cursor_extension(value: Any) -> dict[str, Any]:
 
 
 def request_params(payload: Mapping[str, Any], cursor: Mapping[str, Any]) -> dict[str, Any]:
-    params = {key: payload[key] for key in OPENAI_PARAM_FIELDS if key in payload}
+    params: dict[str, Any] = {}
+    for key in CURSOR_MODEL_PARAM_FIELDS:
+        if key not in payload or key in {"max_tokens", "max_completion_tokens"}:
+            continue
+        params[key] = payload[key]
+    # Both OpenAI names map onto Cursor `max_tokens`. Prefer the newer
+    # `max_completion_tokens` when both are present.
+    if "max_completion_tokens" in payload:
+        params["max_tokens"] = payload["max_completion_tokens"]
+    elif "max_tokens" in payload:
+        params["max_tokens"] = payload["max_tokens"]
     params.update(dict(cursor.get("params") or {}))
     return params
 
@@ -573,16 +635,45 @@ def messages_to_prompt(messages: Sequence[Mapping[str, Any]]) -> str:
 
 
 def build_models_payload(client: Any, settings: Settings) -> dict[str, Any]:
+    from hermes_cursor_sdk.models import catalog_context_options, infer_model_context_length
+
     models = client_models(client, settings)
     data = []
     for model in models:
-        model_id = model.get("id") if isinstance(model, Mapping) else model
+        if isinstance(model, Mapping):
+            model_id = model.get("id")
+            parameters = (
+                model.get("parameters") if isinstance(model.get("parameters"), Mapping) else {}
+            )
+            options = list(model.get("context_options") or []) or catalog_context_options(
+                parameters
+            )
+            context_length = model.get("cursor_context_length")
+            context_source = model.get("context_source")
+            if not context_length:
+                context_length, context_source = infer_model_context_length(
+                    str(model_id) if model_id is not None else None,
+                    parameters,
+                    fallback=settings.bridge_context_length,
+                )
+        else:
+            model_id = model
+            options = []
+            context_length, context_source = infer_model_context_length(
+                str(model_id),
+                None,
+                fallback=settings.bridge_context_length,
+            )
+        resolved = int(context_length or settings.bridge_context_length)
+        if not options:
+            options = [resolved]
         data.append(
             {
                 "id": str(model_id),
                 "object": "model",
-                "context_length": settings.bridge_context_length,
-                "context_source": "connector_budget",
+                "context_length": resolved,
+                "context_source": context_source or "connector_budget",
+                "context_options": options,
                 "max_completion_tokens": get_setting(
                     settings,
                     "bridge_max_completion_tokens",
@@ -606,6 +697,16 @@ def client_models(client: Any, settings: Settings) -> list[Any]:
     return [get_setting(settings, "default_model", default="composer-2.5")]
 
 
+def openai_usage_from_response(response: Any) -> dict[str, Any] | None:
+    """Extract OpenAI-shaped usage from a ResultDict / metadata wrapper."""
+
+    metadata = extract_metadata(response)
+    usage = metadata.get("usage")
+    if usage is None and isinstance(response, Mapping):
+        usage = response.get("usage")
+    return to_openai_usage(usage)
+
+
 def build_completion_payload(response: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     text = extract_text(response)
     metadata = extract_metadata(response)
@@ -622,9 +723,9 @@ def build_completion_payload(response: Any, payload: Mapping[str, Any]) -> dict[
             }
         ],
     }
-    usage = metadata.get("usage")
-    if isinstance(usage, Mapping):
-        body["usage"] = dict(usage)
+    usage = openai_usage_from_response(response)
+    if usage is not None:
+        body["usage"] = usage
     return body
 
 
@@ -687,6 +788,10 @@ def raise_for_result_error(value: Any) -> None:
         return
     error = value.get("error") if isinstance(value.get("error"), Mapping) else {}
     status = int(error.get("status_code") or HTTPStatus.BAD_GATEWAY)
+    # Cursor SDK sometimes stamps status_code=200 on failed runs; never
+    # surface those as successful HTTP responses to OpenAI clients.
+    if status < 400:
+        status = int(HTTPStatus.BAD_GATEWAY)
     raise BridgeError(
         status,
         str(error.get("message") or "Cursor SDK request failed"),

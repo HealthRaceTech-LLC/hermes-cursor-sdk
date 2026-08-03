@@ -56,7 +56,9 @@ class Settings:
     bridge_cwd: Path | None = None
     bridge_env_file: Path | None = None
     provider_model_params: dict[str, Any] = field(default_factory=dict)
-    bridge_context_length: int = 65536
+    # Fallback only when a model has no catalog/known window. Composer-2.5 is
+    # a fixed 200K window; prefer per-model inference in the bridge.
+    bridge_context_length: int = 200_000
     bridge_max_output_tokens: int = 8192
     sdk_http_timeout: int = 30
     run_wait_timeout: int = 900

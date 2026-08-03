@@ -76,8 +76,12 @@ def _value(obj: Any, *names: str, default: Any = None) -> Any:
 def _usage_dict(usage: Any | None = None) -> UsageDict:
     input_tokens = int(_value(usage, "input_tokens", "prompt_tokens", default=0) or 0)
     output_tokens = int(_value(usage, "output_tokens", "completion_tokens", default=0) or 0)
-    cache_read_tokens = int(_value(usage, "cache_read_tokens", default=0) or 0)
-    cache_write_tokens = int(_value(usage, "cache_write_tokens", default=0) or 0)
+    cache_read_tokens = int(
+        _value(usage, "cache_read_tokens", "cache_read_input_tokens", default=0) or 0
+    )
+    cache_write_tokens = int(
+        _value(usage, "cache_write_tokens", "cache_creation_input_tokens", default=0) or 0
+    )
     reasoning_tokens = int(_value(usage, "reasoning_tokens", default=0) or 0)
     total_tokens = int(_value(usage, "total_tokens", default=0) or 0)
     if not total_tokens:
@@ -91,6 +95,33 @@ def _usage_dict(usage: Any | None = None) -> UsageDict:
         "cache_write_tokens": cache_write_tokens,
         "total_tokens": total_tokens,
         "reasoning_tokens": reasoning_tokens,
+    }
+
+
+def to_openai_usage(usage: Any | None = None) -> dict[str, Any] | None:
+    """OpenAI-shaped usage for Hermes context meters.
+
+    Hermes ``normalize_usage`` / statusbars read ``prompt_tokens`` and
+    ``completion_tokens``. Match Hermes CanonicalUsage: prompt = input +
+    cache_read + cache_write. Return ``None`` when counts are missing/zero so
+    clients do not latch a fake 0% occupancy.
+    """
+
+    if usage is None:
+        return None
+    cursor = _usage_dict(usage)
+    prompt_tokens = (
+        cursor["input_tokens"] + cursor["cache_read_tokens"] + cursor["cache_write_tokens"]
+    )
+    completion_tokens = cursor["output_tokens"]
+    # Hermes meters need prompt_tokens; total-only payloads are not usable.
+    if prompt_tokens == 0 and completion_tokens == 0:
+        return None
+    return {
+        **cursor,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
     }
 
 
@@ -143,6 +174,12 @@ def extract_assistant_text(run: Any) -> str:
             pass
     elif text_attr:
         return str(text_attr)
+
+    # cursor_sdk.RunResult exposes the final assistant reply on `.result`.
+    for name in ("result", "result_text", "output"):
+        value = _value(run, name)
+        if isinstance(value, str) and value:
+            return value
 
     messages_attr = getattr(run, "messages", None)
     messages = messages_attr() if callable(messages_attr) else messages_attr

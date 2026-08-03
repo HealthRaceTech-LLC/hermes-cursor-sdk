@@ -65,7 +65,15 @@ def selection_params(selection: Any) -> dict[str, Any]:
     )
     if not params:
         return {}
-    return {key: getattr(value, "value", value) for key, value in dict(params).items()}
+    if isinstance(params, dict):
+        return {key: getattr(value, "value", value) for key, value in params.items()}
+    result: dict[str, Any] = {}
+    for item in params:
+        if hasattr(item, "id"):
+            result[str(item.id)] = getattr(item, "value", item)
+        elif isinstance(item, dict):
+            result[str(item.get("id"))] = item.get("value")
+    return result
 
 
 def test_normalize_model_from_mapping() -> None:
@@ -84,6 +92,32 @@ def test_normalize_model_from_mapping() -> None:
     assert model["provider"] == "cursor"
     assert model["parameters"]["reasoning_effort"]["type"] == "string"
     assert model["bridge_context_length"] == 65536
+    assert model["cursor_context_length"] == 200_000
+    assert model["context_source"] == "cursor_model_window"
+
+
+def test_infer_model_context_length_from_catalog_context_param() -> None:
+    from hermes_cursor_sdk.models import catalog_context_options, infer_model_context_length
+
+    params = {
+        "context": {
+            "name": "context",
+            "values": [
+                {"value": "272k", "display_name": "272K"},
+                {"value": "1m", "display_name": "1M"},
+            ],
+        }
+    }
+    tokens, source = infer_model_context_length("gpt-5.6-sol", params, fallback=200_000)
+    # Advertise max (1M) when Max Mode / larger context is available.
+    assert tokens == 1_000_000
+    assert source == "cursor_model_window"
+    assert catalog_context_options(params) == [272_000, 1_000_000]
+
+    selected, _ = infer_model_context_length(
+        "gpt-5.6-sol", params, fallback=200_000, selected_context="272k"
+    )
+    assert selected == 272_000
 
 
 def test_normalize_model_from_object_parameters() -> None:
@@ -164,6 +198,19 @@ def test_call_list_supports_positional_and_no_arg_fallbacks() -> None:
     assert models._call_list(NoArgResource(), "cursor-key") == ["none"]
 
 
+def test_resolve_model_selection_empty_params_are_iterable() -> None:
+    selection = resolve_model_selection(None, {}, catalog(), "composer-2.5")
+
+    assert selection_id(selection) == "composer-2.5"
+    params = (
+        selection.get("params") if isinstance(selection, dict) else getattr(selection, "params", ())
+    )
+    assert params is not None
+    assert list(params) == []
+    if hasattr(selection, "to_json"):
+        assert selection.to_json()["id"] == "composer-2.5"
+
+
 def test_resolve_model_selection_uses_default_and_params() -> None:
     selection = resolve_model_selection(
         None,
@@ -185,7 +232,11 @@ def test_resolve_model_selection_merges_model_dict_params() -> None:
     )
 
     assert selection_id(selection) == "composer-2.5"
-    assert selection_params(selection) == {"reasoning_effort": "low", "max_tokens": 100}
+    # cursor_sdk.ModelParameterValue stores values as strings.
+    assert selection_params(selection) == {
+        "reasoning_effort": "low",
+        "max_tokens": "100",
+    }
 
 
 def test_resolve_model_selection_invalid_param_raises() -> None:

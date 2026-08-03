@@ -14,6 +14,14 @@ from tests.helpers.http_client import request_json
 from hermes_cursor_sdk.bridge.server import BridgeHTTPServer
 from hermes_cursor_sdk.config import Settings
 
+SEEDED_USAGE = {
+    "input_tokens": 1000,
+    "cache_read_tokens": 200,
+    "cache_write_tokens": 0,
+    "output_tokens": 50,
+    "total_tokens": 1250,
+}
+
 
 class BridgeFakeClient:
     def __init__(self) -> None:
@@ -26,8 +34,15 @@ class BridgeFakeClient:
     def chat_completions(self, **kwargs: Any) -> Any:
         self.calls.append(("chat_completions", kwargs))
         if kwargs.get("stream"):
-            return iter([{"result_text": "hello "}, {"result_text": "world"}])
-        return {"ok": True, "result_text": "hello world", "usage": {"total_tokens": 2}}
+            # Usage on an earlier chunk (not the last) — Hermes meters still need
+            # a trailing SSE usage event.
+            return iter(
+                [
+                    {"result_text": "hello ", "usage": dict(SEEDED_USAGE)},
+                    {"result_text": "world"},
+                ]
+            )
+        return {"ok": True, "result_text": "hello world", "usage": dict(SEEDED_USAGE)}
 
 
 @pytest.fixture
@@ -113,6 +128,9 @@ def test_models_requires_auth_and_returns_models(
     assert unauthorized == 401
     assert ok == 200
     assert "composer-2.5" in body
+    payload = json.loads(body)
+    assert payload["data"][0]["context_length"] == 200_000
+    assert payload["data"][0]["context_source"] == "cursor_model_window"
 
 
 @pytest.mark.integration
@@ -130,11 +148,15 @@ def test_chat_completions(bridge_server: tuple[str, BridgeFakeClient]) -> None:
     assert status == 200
     assert "hello world" in body
     assert client.calls[-1][0] == "chat_completions"
+    payload = json.loads(body)
+    assert payload["usage"]["prompt_tokens"] == 1200
+    assert payload["usage"]["completion_tokens"] == 50
+    assert payload["usage"]["total_tokens"] == 1250
 
 
 @pytest.mark.integration
-def test_chat_completions_reject_tools(bridge_server: tuple[str, BridgeFakeClient]) -> None:
-    base_url, _client = bridge_server
+def test_chat_completions_strips_tools(bridge_server: tuple[str, BridgeFakeClient]) -> None:
+    base_url, client = bridge_server
 
     status, _headers, body = request_json(
         base_url,
@@ -145,11 +167,15 @@ def test_chat_completions_reject_tools(bridge_server: tuple[str, BridgeFakeClien
             "model": "composer-2.5",
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "function"}],
+            "tool_choice": "auto",
         },
     )
 
-    assert status == 400
-    assert "unsupported_tools" in body
+    assert status == 200
+    assert "hello world" in body
+    # Tools must not be forwarded into the Cursor client call.
+    assert "tools" not in client.calls[-1][1]
+    assert "tool_choice" not in client.calls[-1][1]
 
 
 @pytest.mark.integration
@@ -175,6 +201,17 @@ def test_stream_sse(bridge_server: tuple[str, BridgeFakeClient]) -> None:
     assert "hello " in body
     assert "world" in body
     assert "data: [DONE]" in body
+    usage_events = []
+    for line in body.splitlines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        event = json.loads(line.removeprefix("data: "))
+        if isinstance(event, dict) and event.get("usage"):
+            usage_events.append(event)
+    assert usage_events, "expected trailing SSE usage chunk for Hermes meters"
+    assert usage_events[-1]["choices"] == []
+    assert usage_events[-1]["usage"]["prompt_tokens"] == 1200
+    assert usage_events[-1]["usage"]["completion_tokens"] == 50
 
 
 @pytest.mark.integration
