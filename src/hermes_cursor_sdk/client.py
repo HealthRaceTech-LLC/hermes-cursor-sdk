@@ -12,8 +12,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
-LOGGER = logging.getLogger("hermes_cursor_sdk.client")
-
 from hermes_cursor_sdk.config import Settings, load_settings, require_api_key
 from hermes_cursor_sdk.errors import (
     BusyError,
@@ -40,6 +38,8 @@ from hermes_cursor_sdk.results import (
     to_openai_usage,
 )
 from hermes_cursor_sdk.store import StateStore
+
+LOGGER = logging.getLogger("hermes_cursor_sdk.client")
 
 TERMINAL_STATUSES = {
     "finished",
@@ -564,12 +564,8 @@ class CursorSDKClient:
         )
         if entry is not None:
             allowed = set((entry.get("parameters") or {}).keys())
-            merged_params = {
-                key: value for key, value in merged_params.items() if key in allowed
-            }
-        return resolve_model_selection(
-            model, merged_params, catalog, self.settings.default_model
-        )
+            merged_params = {key: value for key, value in merged_params.items() if key in allowed}
+        return resolve_model_selection(model, merged_params, catalog, self.settings.default_model)
 
     def _validate_cwd(self, cwd: str | Path | None) -> Path:
         if cwd is None:

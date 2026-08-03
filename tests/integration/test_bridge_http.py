@@ -14,7 +14,6 @@ from tests.helpers.http_client import request_json
 from hermes_cursor_sdk.bridge.server import BridgeHTTPServer
 from hermes_cursor_sdk.config import Settings
 
-
 SEEDED_USAGE = {
     "input_tokens": 1000,
     "cache_read_tokens": 200,

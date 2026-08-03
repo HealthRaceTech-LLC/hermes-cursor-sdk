@@ -217,8 +217,7 @@ def normalize_model(model: Any, *, bridge_context_length: int | None = None) -> 
         "cursor_context_length": cursor_context_length,
         "bridge_context_length": bridge_context_length,
         "context_source": context_source,
-        "context_options": options
-        or ([cursor_context_length] if cursor_context_length else []),
+        "context_options": options or ([cursor_context_length] if cursor_context_length else []),
         "raw": model,
     }
 
@@ -291,9 +290,7 @@ def _model_selection(model_id: str, params: Mapping[str, Any]) -> Any:
     if ModelSelection is None:
         serialized: dict[str, Any] = {"id": model_id}
         if params:
-            serialized["params"] = {
-                key: _parameter_value(value) for key, value in params.items()
-            }
+            serialized["params"] = {key: _parameter_value(value) for key, value in params.items()}
         return serialized
 
     # Prefer SDK from_value: params must be a sequence (never None). Passing

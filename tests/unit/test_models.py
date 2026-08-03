@@ -203,9 +203,7 @@ def test_resolve_model_selection_empty_params_are_iterable() -> None:
 
     assert selection_id(selection) == "composer-2.5"
     params = (
-        selection.get("params")
-        if isinstance(selection, dict)
-        else getattr(selection, "params", ())
+        selection.get("params") if isinstance(selection, dict) else getattr(selection, "params", ())
     )
     assert params is not None
     assert list(params) == []

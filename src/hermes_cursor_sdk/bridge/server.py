@@ -636,8 +636,12 @@ def build_models_payload(client: Any, settings: Settings) -> dict[str, Any]:
     for model in models:
         if isinstance(model, Mapping):
             model_id = model.get("id")
-            parameters = model.get("parameters") if isinstance(model.get("parameters"), Mapping) else {}
-            options = list(model.get("context_options") or []) or catalog_context_options(parameters)
+            parameters = (
+                model.get("parameters") if isinstance(model.get("parameters"), Mapping) else {}
+            )
+            options = list(model.get("context_options") or []) or catalog_context_options(
+                parameters
+            )
             context_length = model.get("cursor_context_length")
             context_source = model.get("context_source")
             if not context_length:
