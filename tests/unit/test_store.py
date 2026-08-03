@@ -87,7 +87,7 @@ def test_save_run_text_updates_path_and_permissions(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_concurrent_writers(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state")
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def writer(prefix: str) -> None:
         try:
@@ -96,7 +96,7 @@ def test_concurrent_writers(tmp_path: Path) -> None:
                 run_id = f"{prefix}-run-{index}"
                 store.upsert_agent(agent_id, runtime="local", cwd=tmp_path)
                 store.upsert_run(run_id, agent_id=agent_id, status="finished")
-        except BaseException as exc:  # pragma: no cover - failure is asserted below
+        except Exception as exc:  # pragma: no cover - failure is asserted below
             errors.append(exc)
 
     threads = [threading.Thread(target=writer, args=(prefix,)) for prefix in ("a", "b")]
