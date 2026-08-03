@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the scaffold and shared-client branches."""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
@@ -43,3 +43,12 @@ def fake_sdk() -> FakeCursorSDK:
 @pytest.fixture
 def client(tmp_settings: Settings, fake_sdk: FakeCursorSDK) -> CursorSDKClient:
     return CursorSDKClient(settings=tmp_settings, sdk=fake_sdk)
+
+
+@pytest.fixture(autouse=True)
+def reset_tools_client() -> None:
+    import hermes_cursor_sdk.tools as tools
+
+    tools._CLIENT = None
+    yield
+    tools._CLIENT = None
