@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
+import logging
+import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
+
+LOGGER = logging.getLogger("hermes_cursor_sdk.client")
 
 from hermes_cursor_sdk.config import Settings, load_settings, require_api_key
 from hermes_cursor_sdk.errors import (
@@ -27,7 +32,13 @@ from hermes_cursor_sdk.models import (
     normalize_repository,
     resolve_model_selection,
 )
-from hermes_cursor_sdk.results import ResultDict, error_result, extract_assistant_text, ok_result
+from hermes_cursor_sdk.results import (
+    ResultDict,
+    error_result,
+    extract_assistant_text,
+    ok_result,
+    to_openai_usage,
+)
 from hermes_cursor_sdk.store import StateStore
 
 TERMINAL_STATUSES = {
@@ -128,6 +139,8 @@ def _legacy_result(value: Any) -> CursorResult:  # pragma: no cover - legacy Cur
 
 
 class CursorSDKClient:
+    _MODEL_CACHE_TTL_SECONDS = 60.0
+
     def __init__(
         self,
         settings: Settings | None = None,
@@ -137,6 +150,8 @@ class CursorSDKClient:
         self.settings = settings or load_settings()
         self.store = store or StateStore(self.settings.store_dir)
         self._sdk = sdk
+        self._models_cache: list[dict[str, Any]] | None = None
+        self._models_cache_at: float = 0.0
 
     @property
     def sdk(self) -> Any:
@@ -148,12 +163,21 @@ class CursorSDKClient:
         return self._sdk
 
     def list_models(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        if (
+            self._models_cache is not None
+            and (now - self._models_cache_at) < self._MODEL_CACHE_TTL_SECONDS
+        ):
+            return list(self._models_cache)
         api_key = require_api_key(self.settings)
         cursor = self.sdk.Cursor
-        return [
+        models = [
             normalize_model(item, bridge_context_length=self.settings.bridge_context_length)
             for item in _items(_call_list(cursor.models, api_key), "models")
         ]
+        self._models_cache = models
+        self._models_cache_at = now
+        return list(models)
 
     def list_repositories(self) -> list[dict[str, Any]]:
         api_key = require_api_key(self.settings)
@@ -171,18 +195,69 @@ class CursorSDKClient:
         model: Any = None,
         params: Mapping[str, Any] | None = None,
     ) -> ResultDict:
+        started = time.monotonic()
+        phases: dict[str, float] = {}
         try:
             api_key = require_api_key(self.settings)
             cwd_path = self._validate_cwd(cwd)
+            mark = time.monotonic()
             model_selection = self._resolve_model(model, params)
+            phases["resolve_model_ms"] = round((time.monotonic() - mark) * 1000, 2)
+            mark = time.monotonic()
             with self._launch_bridge(cwd_path, api_key) as bridge:
+                phases["launch_bridge_ms"] = round((time.monotonic() - mark) * 1000, 2)
                 options = self._agent_options(
                     api_key=api_key, model=model_selection, runtime="local", cwd=cwd_path
                 )
+                mark = time.monotonic()
                 run = self._agent_prompt(prompt, options, bridge)
+                phases["agent_prompt_ms"] = round((time.monotonic() - mark) * 1000, 2)
+                mark = time.monotonic()
                 terminal = self._wait(run)
-            return self._result_from_run(terminal, runtime="local", model=model_selection)
+                phases["wait_ms"] = round((time.monotonic() - mark) * 1000, 2)
+                mark = time.monotonic()
+            # Context-manager exit tears down the SDK bridge process.
+            phases["teardown_ms"] = round((time.monotonic() - mark) * 1000, 2)
+            phases["total_ms"] = round((time.monotonic() - started) * 1000, 2)
+            sdk_duration = _value(terminal, "duration_ms")
+            if sdk_duration is not None:
+                phases["sdk_duration_ms"] = sdk_duration
+            result = self._result_from_run(terminal, runtime="local", model=model_selection)
+            openai_usage = to_openai_usage(
+                result.get("usage") if isinstance(result, Mapping) else None
+            )
+            if openai_usage is not None:
+                phases["prompt_tokens"] = openai_usage["prompt_tokens"]
+                phases["completion_tokens"] = openai_usage["completion_tokens"]
+                phases["total_tokens"] = openai_usage["total_tokens"]
+            LOGGER.info(
+                "%s",
+                json.dumps(
+                    {"event": "run_local_timing", "prompt_chars": len(str(prompt)), **phases},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            )
+            if isinstance(result, dict) and result.get("ok"):
+                metadata = dict(result.get("metadata") or {})
+                metadata["timing"] = phases
+                result["metadata"] = metadata
+            return result
         except Exception as exc:
+            phases["total_ms"] = round((time.monotonic() - started) * 1000, 2)
+            LOGGER.info(
+                "%s",
+                json.dumps(
+                    {
+                        "event": "run_local_timing",
+                        "error": exc.__class__.__name__,
+                        "prompt_chars": len(str(prompt)),
+                        **phases,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            )
             return error_result(map_exception(exc), runtime="local", model=model)
 
     def start_cloud(
@@ -469,9 +544,31 @@ class CursorSDKClient:
                 self._close(agent)
 
     def _resolve_model(self, model: Any, params: Mapping[str, Any] | None) -> Any:
+        catalog = self.list_models()
         merged_params = {**self.settings.provider_model_params, **dict(params or {})}
+        # Hermes OpenAI clients send transport knobs (max_tokens, …) that are
+        # not Cursor ModelSelection params for every model. Keep only catalog-
+        # declared keys so chat-provider mode does not 400 on normal Hermes
+        # requests; Phase 1 tools still validate via resolve_model_selection.
+        if isinstance(model, dict):
+            model_id = str(model.get("id") or model.get("name") or self.settings.default_model)
+        else:
+            model_id = str(model or self.settings.default_model)
+        entry = next(
+            (
+                item
+                for item in catalog
+                if item.get("id") == model_id or item.get("name") == model_id
+            ),
+            None,
+        )
+        if entry is not None:
+            allowed = set((entry.get("parameters") or {}).keys())
+            merged_params = {
+                key: value for key, value in merged_params.items() if key in allowed
+            }
         return resolve_model_selection(
-            model, merged_params, self.list_models(), self.settings.default_model
+            model, merged_params, catalog, self.settings.default_model
         )
 
     def _validate_cwd(self, cwd: str | Path | None) -> Path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -100,17 +101,124 @@ def _normalize_parameters(parameters: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+# Composer models do not expose a catalog `context` param; Cursor documents a
+# fixed 200K window (Max Mode does not expand it).
+_COMPOSER_CONTEXT_LENGTH = 200_000
+
+
+def parse_context_token_count(value: Any) -> int | None:
+    """Parse catalog labels like ``200k`` / ``1m`` / ``272000`` into token ints.
+
+    Requires a numeric prefix so labels like ``medium`` are not treated as
+    millions (``.endswith("m")`` trap).
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 else None
+    text = str(value).strip().lower().replace(",", "").replace("_", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([km])?", text)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2)
+    if unit == "m":
+        return int(number * 1_000_000)
+    if unit == "k":
+        return int(number * 1_000)
+    return int(number)
+
+
+def _parameter_value_tokens(values: Any) -> list[int]:
+    if values is None:
+        return []
+    items = values if isinstance(values, (list, tuple)) else [values]
+    out: list[int] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            raw = item.get("value", item.get("id", item.get("display_name")))
+        else:
+            raw = _value(item, "value", "id", "display_name", default=item)
+        parsed = parse_context_token_count(raw)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def catalog_context_options(
+    parameters: Mapping[str, Any] | None = None,
+) -> list[int]:
+    """Return sorted unique context-window options from a catalog ``context`` param."""
+
+    params = parameters or {}
+    context_param = params.get("context") if isinstance(params, Mapping) else None
+    if not isinstance(context_param, Mapping):
+        return []
+    tokens = _parameter_value_tokens(context_param.get("values"))
+    default_tokens = parse_context_token_count(context_param.get("default"))
+    if default_tokens is not None:
+        tokens.append(default_tokens)
+    return sorted(set(tokens))
+
+
+def infer_model_context_length(
+    model_id: str | None,
+    parameters: Mapping[str, Any] | None = None,
+    *,
+    fallback: int | None = None,
+    selected_context: Any | None = None,
+) -> tuple[int | None, str | None]:
+    """Return (tokens, source) for Hermes `/v1/models` context_length.
+
+    - If ``selected_context`` is set (request param), use that exact window.
+    - Else if the catalog lists ``context`` options, advertise the **max**
+      (e.g. 1M when Max Mode is available). Base/default is still exposed via
+      ``context_options``.
+    - Composer models use a fixed 200K window.
+    """
+
+    selected = parse_context_token_count(selected_context)
+    if selected is not None:
+        return selected, "cursor_model_window"
+
+    options = catalog_context_options(parameters)
+    if options:
+        return max(options), "cursor_model_window"
+
+    mid = (model_id or "").strip().lower()
+    if mid.startswith("composer"):
+        return _COMPOSER_CONTEXT_LENGTH, "cursor_model_window"
+
+    if fallback is not None and fallback > 0:
+        return fallback, "connector_budget"
+    return None, None
+
+
 def normalize_model(model: Any, *, bridge_context_length: int | None = None) -> dict[str, Any]:
     model_id = _value(model, "id", "model_id", "name")
     parameters = _normalize_parameters(_value(model, "parameters", "params", "model_parameters"))
+    options = catalog_context_options(parameters)
+    cursor_context_length, context_source = infer_model_context_length(
+        str(model_id) if model_id is not None else None,
+        parameters,
+        fallback=bridge_context_length,
+    )
     return {
         "id": str(model_id) if model_id is not None else "",
         "name": _value(model, "name", "display_name", default=str(model_id) if model_id else ""),
         "provider": _value(model, "provider"),
         "parameters": parameters,
         "presets": _value(model, "presets", default=[]),
-        "cursor_context_length": None,
+        "cursor_context_length": cursor_context_length,
         "bridge_context_length": bridge_context_length,
+        "context_source": context_source,
+        "context_options": options
+        or ([cursor_context_length] if cursor_context_length else []),
         "raw": model,
     }
 
@@ -173,18 +281,50 @@ def _parameter_value(value: Any) -> Any:
             return value
 
 
+def _sdk_param_entries(params: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Serialize params for cursor_sdk.ModelSelection.from_value."""
+
+    return [{"id": str(key), "value": str(value)} for key, value in params.items()]
+
+
 def _model_selection(model_id: str, params: Mapping[str, Any]) -> Any:
-    serialized: dict[str, Any] = {"id": model_id}
-    if params:
-        serialized["params"] = {key: _parameter_value(value) for key, value in params.items()}
     if ModelSelection is None:
+        serialized: dict[str, Any] = {"id": model_id}
+        if params:
+            serialized["params"] = {
+                key: _parameter_value(value) for key, value in params.items()
+            }
         return serialized
+
+    # Prefer SDK from_value: params must be a sequence (never None). Passing
+    # params=None overrides the dataclass default and crashes in to_json().
+    from_value = getattr(ModelSelection, "from_value", None)
+    if callable(from_value):
+        payload: dict[str, Any] = {"id": model_id}
+        if params:
+            payload["params"] = _sdk_param_entries(params)
+        try:
+            return from_value(payload)
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    # Legacy / test-double constructors may accept dict-shaped params.
+    param_values = (
+        {key: _parameter_value(value) for key, value in params.items()} if params else None
+    )
     try:
-        return ModelSelection(id=model_id, params=serialized.get("params"))
+        if param_values is None:
+            return ModelSelection(id=model_id)
+        return ModelSelection(id=model_id, params=param_values)
     except TypeError:
         try:
-            return ModelSelection(model_id, serialized.get("params"))
+            if param_values is None:
+                return ModelSelection(model_id)
+            return ModelSelection(model_id, param_values)
         except TypeError:
+            serialized = {"id": model_id}
+            if param_values is not None:
+                serialized["params"] = param_values
             return serialized
 
 

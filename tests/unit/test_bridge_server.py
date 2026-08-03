@@ -47,10 +47,24 @@ def test_parse_cursor_extension_defaults_and_request_params() -> None:
     cursor = server.parse_cursor_extension(
         {"session_id": "", "cwd": "", "params": {"effort": "high"}}
     )
-    params = server.request_params({"temperature": 0.2, "ignored": True}, cursor)
+    params = server.request_params(
+        {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_completion_tokens": 256,
+            "reasoning_effort": "low",
+            "ignored": True,
+        },
+        cursor,
+    )
 
     assert cursor == {"session_id": None, "cwd": None, "params": {"effort": "high"}}
-    assert params == {"temperature": 0.2, "effort": "high"}
+    # OpenAI sampling knobs are dropped; Cursor-mappable fields + cursor.params remain.
+    assert params == {
+        "max_tokens": 256,
+        "reasoning_effort": "low",
+        "effort": "high",
+    }
 
 
 def test_send_session_ensures_then_sends() -> None:
@@ -141,6 +155,48 @@ def test_models_payload_falls_back_to_default_model() -> None:
     payload = server.build_models_payload(Client(), Settings(default_model="fallback-model"))
 
     assert payload["data"][0]["id"] == "fallback-model"
+    # Unknown model id falls back to connector budget.
+    assert payload["data"][0]["context_length"] == Settings().bridge_context_length
+    assert payload["data"][0]["context_source"] == "connector_budget"
+
+
+def test_models_payload_uses_composer_200k_window() -> None:
+    class Client:
+        def list_models(self) -> list[dict[str, Any]]:
+            return [{"id": "composer-2.5", "parameters": {}}]
+
+    payload = server.build_models_payload(Client(), Settings())
+
+    assert payload["data"][0]["context_length"] == 200_000
+    assert payload["data"][0]["context_source"] == "cursor_model_window"
+
+
+def test_build_completion_payload_emits_openai_usage_aliases() -> None:
+    body = server.build_completion_payload(
+        {
+            "ok": True,
+            "result_text": "hi",
+            "usage": {
+                "input_tokens": 1000,
+                "cache_read_tokens": 200,
+                "output_tokens": 50,
+            },
+        },
+        {"model": "composer-2.5"},
+    )
+
+    assert body["usage"]["prompt_tokens"] == 1200
+    assert body["usage"]["completion_tokens"] == 50
+    assert body["usage"]["total_tokens"] == 1250
+
+
+def test_build_completion_payload_omits_zero_usage() -> None:
+    body = server.build_completion_payload(
+        {"ok": True, "result_text": "hi", "usage": {"input_tokens": 0, "output_tokens": 0}},
+        {"model": "composer-2.5"},
+    )
+
+    assert "usage" not in body
 
 
 def test_completion_helpers_cover_text_and_metadata_shapes() -> None:

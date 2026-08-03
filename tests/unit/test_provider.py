@@ -31,14 +31,18 @@ def test_build_extra_body_shape() -> None:
         session_id="session-1",
         cwd="/tmp/work",
         params={"reasoning_effort": "high"},
+        # Hermes transport context — must not become Cursor model params.
         temperature=0.2,
+        base_url="http://127.0.0.1:8787/v1",
+        model="composer-2.5",
+        reasoning_config={"enabled": True, "effort": "max"},
     )
 
     assert extra == {
         "cursor": {
-            "session_id": "session-1",
+            "session_id": None,
             "cwd": "/tmp/work",
-            "params": {"reasoning_effort": "high", "temperature": 0.2},
+            "params": {"reasoning_effort": "high"},
         }
     }
 

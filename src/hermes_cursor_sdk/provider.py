@@ -161,16 +161,32 @@ class CursorProfile(ProviderProfile):
         return model_ids or None
 
     def build_extra_body(self, session_id: str | None = None, **context: Any) -> dict[str, Any]:
-        """Build the OpenAI extra_body cursor extension."""
+        """Build the OpenAI extra_body cursor extension.
+
+        Hermes also passes transport context (``base_url``, ``model``,
+        ``reasoning_config``, …). Those must stay out of ``cursor.params`` —
+        only explicit Cursor model params belong there.
+
+        Hermes ``session_id`` is intentionally not forwarded as
+        ``cursor.session_id``. Bridging Hermes sessions onto Cursor
+        Agent.resume is unreliable in v1; each completion runs stateless
+        local ``Agent.prompt`` instead. Pass an explicit Cursor session via
+        ``params`` / a future API if sticky Cursor agents are needed.
+        """
+        del session_id  # Hermes session ≠ Cursor agent session (v1).
         cwd = context.pop("cwd", None)
         params = context.pop("params", None)
         if params is None:
             params = {}
         if not isinstance(params, Mapping):
             raise TypeError("params must be a mapping")
-        merged_params = dict(params)
-        merged_params.update(context)
-        return {"cursor": {"session_id": session_id, "cwd": cwd, "params": merged_params}}
+        return {
+            "cursor": {
+                "session_id": None,
+                "cwd": cwd,
+                "params": dict(params),
+            }
+        }
 
 
 def register_cursor_provider() -> Any:
