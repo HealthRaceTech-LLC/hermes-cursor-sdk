@@ -1,0 +1,102 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-cursor-sdk"
+version = "0.1.0"
+description = "Unofficial Hermes plugin wrapping the Cursor SDK."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [
+  { name = "HealthRaceTech LLC" }
+]
+keywords = ["hermes", "cursor", "cursor-sdk", "agent", "plugin"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = [
+  "cursor-sdk>=1.0.26,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/HealthRaceTech-LLC/hermes-cursor-sdk"
+Issues = "https://github.com/HealthRaceTech-LLC/hermes-cursor-sdk/issues"
+Repository = "https://github.com/HealthRaceTech-LLC/hermes-cursor-sdk"
+
+[project.scripts]
+hermes-cursor = "hermes_cursor_sdk.cli:main"
+hermes-cursor-bridge = "hermes_cursor_sdk.bridge.server:main"
+
+[project.entry-points."hermes_agent.plugins"]
+cursor = "hermes_cursor_sdk.plugin"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "pytest-mock",
+  "pytest-xdist",
+  "freezegun",
+  "httpx",
+  "build",
+  "twine",
+  "pip-audit",
+  "ruff",
+  "ty",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_cursor_sdk"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --cov=hermes_cursor_sdk --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
+markers = [
+  "integration: tests that exercise process or network boundaries",
+  "contract: tests that validate Hermes and Cursor SDK compatibility",
+  "manual: smoke checks that require a human/operator environment",
+  "slow: tests that intentionally exercise concurrency or longer-running paths",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["hermes_cursor_sdk"]
+omit = [
+  "tests/*",
+  "*/bridge/__main__.py",
+  "*/provider_shim/*",
+]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+

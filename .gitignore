@@ -1,0 +1,48 @@
+
+# Byte-compiled / optimized / DLL files
+# C extensions
+# Distribution / packaging
+# IDE / OS
+# Local configuration
+# Test / coverage
+# Virtual environments
+*$py.class
+*.egg
+*.egg-info/
+*.local
+*.py[cod]
+*.so
+.DS_Store
+.Python
+.coverage
+.coverage.*
+.eggs/
+.env
+.env.*
+.idea/
+.installed.cfg
+.mypy_cache/
+.nox/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.venv/
+.vscode/
+ENV/
+MANIFEST
+__pycache__/
+build/
+coverage.xml
+dist/
+downloads/
+eggs/
+env/
+htmlcov/
+lib/
+lib64/
+parts/
+sdist/
+share/python-wheels/
+var/
+venv/
+wheels/

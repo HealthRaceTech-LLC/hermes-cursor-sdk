@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Ruff format
+        run: ruff format --check .
+      - name: Ruff check
+        run: ruff check .
+      - name: Type check
+        run: ty check src
+
+  test:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Pytest
+        run: pytest -m "not slow" --cov=hermes_cursor_sdk --cov-report=term-missing --cov-fail-under=85
+
+  test-slow:
+    name: Slow tests
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Pytest (full)
+        run: pytest --cov=hermes_cursor_sdk --cov-fail-under=85
+
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine && python -m pip install -e '.[dev]'
+      - name: Build wheel
+        run: python -m build
+      - name: Twine check
+        run: twine check dist/*
+      - name: Clean install smoke
+        run: |
+          python -m venv /tmp/hcs-wheel
+          /tmp/hcs-wheel/bin/pip install dist/*.whl
+          /tmp/hcs-wheel/bin/hermes-cursor --help
+          /tmp/hcs-wheel/bin/hermes-cursor-bridge --help
+          /tmp/hcs-wheel/bin/python -c "import hermes_cursor_sdk.plugin as p; assert hasattr(p, 'register')"
+
+  hermes-compat:
+    name: Hermes entry-point compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install connector
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Entry point + plugin register
+        run: |
+          python - <<'PY'
+          from importlib.metadata import entry_points
+          from tests.helpers.fake_hermes import PluginContext
+          eps = entry_points(group="hermes_agent.plugins")
+          matches = [ep for ep in eps if ep.name == "cursor"]
+          assert matches, "missing hermes_agent.plugins entry point 'cursor'"
+          mod = matches[0].load()
+          assert hasattr(mod, "register")
+          ctx = PluginContext()
+          mod.register(ctx)
+          assert len(ctx.tools) == 9
+          assert ctx.tools[0]["toolset"] == "cursor"
+          PY
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip pip-audit && python -m pip install -e .
+      - name: pip-audit
+        run: pip-audit
