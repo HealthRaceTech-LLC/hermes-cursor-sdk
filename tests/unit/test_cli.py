@@ -297,6 +297,8 @@ def test_setup_preserves_custom_base_url(
 
     parsed = config.parse_bridge_env_file(isolated_cli_paths / "cursor-sdk" / "bridge.env")
     assert parsed["HERMES_CURSOR_BASE_URL"] == "http://127.0.0.1:9999/v1"
+    assert parsed["HERMES_CURSOR_BRIDGE_HOST"] == "127.0.0.1"
+    assert parsed["HERMES_CURSOR_BRIDGE_PORT"] == "9999"
 
 
 def test_setup_doctor_hint_includes_profile(

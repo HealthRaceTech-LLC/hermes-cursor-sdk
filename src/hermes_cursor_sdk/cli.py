@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 from xml.sax.saxutils import escape
 
@@ -345,6 +346,11 @@ def cmd_setup(
         or existing_bridge.get("HERMES_CURSOR_BASE_URL")
         or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
     ).rstrip("/")
+    bridge_host, bridge_port = bridge_bind_from_base_url(
+        base_url,
+        fallback_host=settings.bridge_host,
+        fallback_port=settings.bridge_port,
+    )
     bridge_env_path.parent.mkdir(parents=True, exist_ok=True)
     write_bridge_env(
         bridge_env_path,
@@ -352,8 +358,8 @@ def cmd_setup(
             "CURSOR_API_KEY": api_key,
             "HERMES_CURSOR_BRIDGE_TOKEN": bridge_token,
             "HERMES_CURSOR_BRIDGE_CWD": str(project),
-            "HERMES_CURSOR_BRIDGE_HOST": settings.bridge_host,
-            "HERMES_CURSOR_BRIDGE_PORT": str(settings.bridge_port),
+            "HERMES_CURSOR_BRIDGE_HOST": bridge_host,
+            "HERMES_CURSOR_BRIDGE_PORT": bridge_port,
             "HERMES_CURSOR_BASE_URL": base_url,
         },
     )
@@ -400,6 +406,24 @@ def cmd_setup(
         doctor_hint += f" --profile {profile}"
     print(f"Run: {doctor_hint}")
     return 0
+
+
+def bridge_bind_from_base_url(
+    base_url: str, *, fallback_host: str, fallback_port: int
+) -> tuple[str, str]:
+    """Derive bridge bind host/port from a base URL so they stay aligned."""
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname or fallback_host
+    if parsed.port is not None:
+        port = str(parsed.port)
+    elif parsed.scheme == "https":
+        port = "443"
+    elif parsed.scheme == "http":
+        port = "80"
+    else:
+        port = str(fallback_port)
+    return host, port
 
 
 def read_env_file(path: Path) -> dict[str, str]:
