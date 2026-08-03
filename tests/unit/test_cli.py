@@ -267,3 +267,136 @@ def test_write_bridge_env_preserves_existing_allowlisted_keys(tmp_path: Path) ->
     assert parsed["CURSOR_API_KEY"] == "new-key"
     assert parsed["HERMES_CURSOR_BRIDGE_TOKEN"] == "token"
     assert parsed["HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH"] == "12345"
+
+
+def test_setup_preserves_custom_base_url(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HERMES_CURSOR_BASE_URL", raising=False)
+    hermes_env = isolated_cli_paths / ".hermes" / ".env"
+    hermes_env.parent.mkdir(parents=True, exist_ok=True)
+    hermes_env.write_text(
+        "CURSOR_API_KEY=cursor-key\nHERMES_CURSOR_BASE_URL=http://127.0.0.1:9999/v1\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        cli.main(
+            [
+                "setup",
+                "--cwd",
+                str(isolated_cli_paths / "project"),
+                "--no-service",
+                "--token",
+                "tok",
+            ]
+        )
+        == 0
+    )
+
+    parsed = config.parse_bridge_env_file(isolated_cli_paths / "cursor-sdk" / "bridge.env")
+    assert parsed["HERMES_CURSOR_BASE_URL"] == "http://127.0.0.1:9999/v1"
+
+
+def test_setup_doctor_hint_includes_profile(
+    isolated_cli_paths: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        cli.main(
+            [
+                "setup",
+                "--cwd",
+                str(isolated_cli_paths / "project"),
+                "--profile",
+                "co-cto",
+                "--no-service",
+                "--token",
+                "tok",
+            ]
+        )
+        == 0
+    )
+    assert "doctor --provider-mode --profile co-cto" in capsys.readouterr().out
+
+
+def test_write_config_toml_dedupes_keys(isolated_cli_paths: Path) -> None:
+    path = isolated_cli_paths / "cursor-sdk" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'bridge_cwd = "/old"\nbridge_cwd = "/also-old"\nkeep = "yes"\n',
+        encoding="utf-8",
+    )
+
+    cli.write_config_toml(
+        bridge_cwd=isolated_cli_paths / "project",
+        bridge_env_file=isolated_cli_paths / "cursor-sdk" / "bridge.env",
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("bridge_cwd =") == 1
+    assert 'keep = "yes"' in text
+    assert str(isolated_cli_paths / "project") in text
+
+
+def test_doctor_prefers_profile_env_over_bridge_env(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("HERMES_CURSOR_BRIDGE_TOKEN", raising=False)
+    monkeypatch.delenv("HERMES_CURSOR_BRIDGE_CWD", raising=False)
+    bridge_env = isolated_cli_paths / "cursor-sdk" / "bridge.env"
+    bridge_env.parent.mkdir(parents=True, exist_ok=True)
+    bridge_env.write_text(
+        "CURSOR_API_KEY=k\n"
+        "HERMES_CURSOR_BRIDGE_TOKEN=from-bridge\n"
+        "HERMES_CURSOR_BRIDGE_CWD=/from/bridge\n",
+        encoding="utf-8",
+    )
+    hermes_env = isolated_cli_paths / ".hermes" / ".env"
+    hermes_env.parent.mkdir(parents=True, exist_ok=True)
+    hermes_env.write_text(
+        "HERMES_CURSOR_BRIDGE_TOKEN=from-profile\nHERMES_CURSOR_BRIDGE_CWD=/from/profile\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["provider", "install"]) == 0
+
+    assert cli.main(["doctor", "--provider-mode"]) == 0
+    # Doctor should not fail on cwd; profile values win over shared bridge.env.
+    # Indirect check: status reports profile cwd when both exist.
+    assert cli.main(["status"]) == 0
+    assert "bridge_cwd: /from/profile" in capsys.readouterr().out
+
+
+def test_bootstrap_service_fails_when_kickstart_fails(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = isolated_cli_paths / "service.file"
+    service.write_text("plist", encoding="utf-8")
+    monkeypatch.setattr(cli, "service_path", lambda: service)
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(args))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        if args[:2] == ["launchctl", "kickstart"]:
+            result = Result()
+            result.returncode = 7
+            result.stderr = "kickstart failed"
+            return result
+        return Result()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with pytest.raises(cli.CLIError, match="kickstart failed"):
+        cli.bootstrap_service()

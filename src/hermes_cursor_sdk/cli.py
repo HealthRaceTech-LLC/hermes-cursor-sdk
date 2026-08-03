@@ -168,12 +168,16 @@ def cmd_status() -> int:
     provider = provider_status()
     service = service_status()
     bridge_token = (
-        settings.bridge_token
-        or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or settings.bridge_token
         or ""
     ).strip()
-    bridge_cwd = settings.bridge_cwd or profile_env.get("HERMES_CURSOR_BRIDGE_CWD") or ""
+    bridge_cwd = (
+        os.environ.get("HERMES_CURSOR_BRIDGE_CWD")
+        or profile_env.get("HERMES_CURSOR_BRIDGE_CWD")
+        or (str(settings.bridge_cwd) if settings.bridge_cwd else "")
+    )
     bridge_url = (
         os.environ.get("HERMES_CURSOR_BASE_URL")
         or profile_env.get("HERMES_CURSOR_BASE_URL")
@@ -194,13 +198,19 @@ def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
     hermes_home = resolve_hermes_home(profile=profile)
     profile_env = read_env_file(hermes_home / ".env")
     provider = provider_status(profile=profile)
+    # Prefer process env + selected profile .env over shared bridge.env values
+    # that load_settings() may have already absorbed.
     bridge_token = (
-        settings.bridge_token
-        or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or settings.bridge_token
         or ""
     ).strip()
-    bridge_cwd = settings.bridge_cwd or profile_env.get("HERMES_CURSOR_BRIDGE_CWD") or None
+    bridge_cwd = (
+        os.environ.get("HERMES_CURSOR_BRIDGE_CWD")
+        or profile_env.get("HERMES_CURSOR_BRIDGE_CWD")
+        or (str(settings.bridge_cwd) if settings.bridge_cwd else None)
+    )
     bridge_url = (
         os.environ.get("HERMES_CURSOR_BASE_URL")
         or profile_env.get("HERMES_CURSOR_BASE_URL")
@@ -291,7 +301,12 @@ def cmd_setup(
         bridge_token = secrets.token_hex(32)
 
     settings = load_settings()
-    base_url = f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
+    base_url = (
+        os.environ.get("HERMES_CURSOR_BASE_URL")
+        or existing_hermes.get("HERMES_CURSOR_BASE_URL")
+        or existing_bridge.get("HERMES_CURSOR_BASE_URL")
+        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
+    ).rstrip("/")
     bridge_env_path.parent.mkdir(parents=True, exist_ok=True)
     write_bridge_env(
         bridge_env_path,
@@ -342,7 +357,10 @@ def cmd_setup(
     print(
         "Next: restart Hermes Desktop / gateway, then pick Cursor (SDK bridge) in the model picker."
     )
-    print("Run: hermes-cursor doctor --provider-mode")
+    doctor_hint = "hermes-cursor doctor --provider-mode"
+    if profile:
+        doctor_hint += f" --profile {profile}"
+    print(f"Run: {doctor_hint}")
     return 0
 
 
@@ -439,6 +457,9 @@ def write_config_toml(*, bridge_cwd: Path, bridge_env_file: Path) -> None:
         if stripped and not stripped.startswith("#") and "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
             if key in updates:
+                if key in seen:
+                    # Drop later duplicate assignments for keys we are upserting.
+                    continue
                 out.append(f"{key} = {toml_string(updates[key])}")
                 seen.add(key)
                 replaced = True
@@ -609,12 +630,15 @@ def bootstrap_service() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    subprocess.run(
+    kick = subprocess.run(
         ["launchctl", "kickstart", "-k", f"{domain}/{label}"],
         check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if kick.returncode != 0:
+        detail = (kick.stderr or kick.stdout or "").strip()
+        raise CLIError(f"launchctl kickstart failed with code {kick.returncode}: {detail}")
     print(f"loaded launchd service: {label}")
 
 
