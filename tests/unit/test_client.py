@@ -72,6 +72,26 @@ def test_start_cloud_idempotency_hit(client: CursorSDKClient, fake_sdk: FakeCurs
     assert [call["method"] for call in fake_sdk.calls].count("Agent.create") == 1
 
 
+def test_start_cloud_retries_failed_idempotency_payload(
+    client: CursorSDKClient, fake_sdk: FakeCursorSDK
+) -> None:
+    client.store.put_idempotency(
+        "create:retry-operation",
+        payload={"ok": False, "code": "cursor_error", "agent_id": "stale"},
+    )
+
+    result = client.start_cloud(
+        prompt="work after failed cache",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=False,
+        idempotency_key="retry-operation",
+    )
+
+    assert result["ok"] is True
+    assert result["agent_id"] != "stale"
+    assert [call["method"] for call in fake_sdk.calls].count("Agent.create") == 1
+
+
 def test_start_cloud_rejects_unknown_env_name(tmp_path: Path, fake_sdk: FakeCursorSDK) -> None:
     client = CursorSDKClient(
         Settings(
@@ -130,6 +150,28 @@ def test_session_send_close_deletes_session(client: CursorSDKClient, tmp_path: P
     assert result["ok"] is True
     assert result["agent_id"] == agent_id
     assert client.store.get_session("session-close") is None
+
+
+def test_session_send_close_keeps_session_on_failure(
+    client: CursorSDKClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_id = client.session_ensure_local(cwd=tmp_path, session_key="session-fail")
+
+    def fail_send(**_kwargs: object) -> None:
+        raise RuntimeError("send failed")
+
+    monkeypatch.setattr(client, "_resume_and_send", fail_send)
+
+    result = client.session_send(
+        session_key="session-fail",
+        prompt="finish",
+        cwd=tmp_path,
+        close=True,
+    )
+
+    assert result["ok"] is False
+    assert result["agent_id"] == agent_id
+    assert client.store.get_session("session-fail") is not None
 
 
 def test_denied_cwd_returns_invalid_args(client: CursorSDKClient) -> None:
@@ -296,6 +338,20 @@ def test_sdk_constructor_and_method_fallbacks(
     )
     assert cloud_options.cloud.env_names == ["SAFE_ENV"]
 
+    class RepoWithPr:
+        def __init__(self, id: str, url: str, ref: str, starting_ref: str, pr_url: str) -> None:
+            self.id = id
+            self.url = url
+            self.ref = ref
+            self.starting_ref = starting_ref
+            self.pr_url = pr_url
+
+    fake_sdk.CloudRepository = RepoWithPr
+    repo = client._cloud_repository(
+        {"url": "git@example.com:repo-1.git", "starting_ref": "main", "pr_url": "https://pr"}
+    )
+    assert repo.pr_url == "https://pr"
+
 
 def test_launch_bridge_and_agent_typeerror_fallbacks(tmp_path: Path) -> None:
     calls: list[str] = []
@@ -357,6 +413,24 @@ def test_launch_bridge_and_agent_typeerror_fallbacks(tmp_path: Path) -> None:
     assert client._agent_send(agent, "hello", mode="agent").id == "run-1"
 
 
+def test_agent_send_preserves_supported_kwargs(tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Agent:
+        def send(self, prompt: str, *, mode: str | None = None) -> object:
+            calls.append({"prompt": prompt, "mode": mode})
+            return object()
+
+    client = CursorSDKClient(
+        settings=Settings(api_key="cursor-key", store_dir=tmp_path / "store"),
+        sdk=object(),
+    )
+
+    client._agent_send(Agent(), "hello", mode="agent", metadata={"correlation_id": "corr-1"})
+
+    assert calls == [{"prompt": "hello", "mode": "agent"}]
+
+
 def test_wait_and_result_error_fallbacks(tmp_path: Path, fake_sdk: FakeCursorSDK) -> None:
     client = CursorSDKClient(
         settings=Settings(api_key="cursor-key", store_dir=tmp_path / "store"),
@@ -369,3 +443,25 @@ def test_wait_and_result_error_fallbacks(tmp_path: Path, fake_sdk: FakeCursorSDK
 
     assert result["ok"] is False
     assert result["code"] == "run_failed"
+
+
+def test_result_from_run_preserves_existing_agent_metadata(
+    client: CursorSDKClient, tmp_path: Path
+) -> None:
+    client.store.upsert_agent(
+        "agent-1",
+        runtime="cloud",
+        cwd=tmp_path,
+        repos=[{"url": "git@example.com:repo-1.git"}],
+        auto_create_pr=True,
+    )
+    run = type("Run", (), {"id": "run-1", "agent_id": "agent-1", "status": "finished"})()
+
+    result = client._result_from_run(run, runtime="cloud", model="composer-2.5")
+    stored = client.store.get_agent("agent-1")
+
+    assert result["ok"] is True
+    assert stored is not None
+    assert stored["cwd"] == str(tmp_path)
+    assert stored["repos"] == [{"url": "git@example.com:repo-1.git"}]
+    assert stored["auto_create_pr"] is True

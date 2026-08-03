@@ -206,7 +206,7 @@ CURSOR_SESSION_SEND: JsonDict = {
 
 CURSOR_AGENT: JsonDict = {
     "name": "cursor_agent",
-    "description": "Manage Cursor agents, usage, artifacts, and archive state.",
+    "description": "Manage Cursor agents and archive state.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -215,11 +215,9 @@ CURSOR_AGENT: JsonDict = {
                 "enum": [
                     "list",
                     "get",
-                    "usage",
-                    "list_artifacts",
                     "archive",
-                    "unarchive",
                     "delete",
+                    "cancel",
                 ],
             },
             "agent_id": {"type": "string", "minLength": 1},
@@ -231,7 +229,7 @@ CURSOR_AGENT: JsonDict = {
             "confirm_agent_id": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Must match agent_id before deleting an agent.",
+                "description": "Must match agent_id before archiving or deleting an agent.",
             },
         },
         "required": ["action"],

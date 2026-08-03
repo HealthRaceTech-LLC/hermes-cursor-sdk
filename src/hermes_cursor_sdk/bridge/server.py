@@ -464,13 +464,17 @@ def send_session(
     stream: bool,
 ) -> Any:
     params = request_params(payload, cursor)
+    cwd = cursor.get("cwd") or get_setting(
+        getattr(client, "settings", None), "bridge_cwd", default=None
+    )
+    cwd = cwd or Path.cwd()
     ensure = getattr(client, "session_ensure_local", None)
     if callable(ensure):
         call_method(
             ensure,
             session_id=session_id,
             session_key=session_id,
-            cwd=cursor.get("cwd"),
+            cwd=cwd,
             model=payload.get("model"),
             params=params,
         )
@@ -484,10 +488,10 @@ def send_session(
             messages=list(messages),
             prompt=messages_to_prompt(messages),
             model=payload.get("model"),
-            cwd=cursor.get("cwd"),
+            cwd=cwd,
             params=params,
             stream=stream,
-            wait=not stream,
+            wait=True,
         )
     return send_stateless(client, payload, cursor, messages, stream)
 
@@ -778,7 +782,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def settings_from_args(args: argparse.Namespace) -> Settings:
-    settings = load_settings(args.env_file)
+    settings = load_settings(
+        env={"HERMES_CURSOR_BRIDGE_ENV_FILE": str(args.env_file)} if args.env_file else None
+    )
     updates: dict[str, Any] = {}
     if args.port is not None:
         updates["bridge_port"] = args.port

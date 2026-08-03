@@ -77,6 +77,35 @@ def test_send_session_ensures_then_sends() -> None:
     assert result == {"ok": True, "result_text": "sent"}
     assert [name for name, _kwargs in calls] == ["ensure", "send"]
     assert calls[1][1]["prompt"] == "user: hi"
+    assert calls[1][1]["wait"] is True
+
+
+def test_send_session_falls_back_to_bridge_cwd_for_streaming(tmp_path: Any) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Client:
+        settings = Settings(api_key="cursor-key", bridge_cwd=tmp_path)
+
+        def session_ensure_local(self, **kwargs: Any) -> str:
+            calls.append(("ensure", kwargs))
+            return "agent-1"
+
+        def session_send(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(("send", kwargs))
+            return {"ok": True, "result_text": "sent"}
+
+    server.send_session(
+        Client(),
+        "session-1",
+        {"model": "composer-2.5"},
+        {"cwd": None, "params": {}},
+        [{"role": "user", "content": "hi"}],
+        True,
+    )
+
+    assert calls[0][1]["cwd"] == tmp_path
+    assert calls[1][1]["cwd"] == tmp_path
+    assert calls[1][1]["wait"] is True
 
 
 def test_send_stateless_fallbacks() -> None:

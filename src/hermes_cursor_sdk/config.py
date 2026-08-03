@@ -19,6 +19,7 @@ DEFAULT_STORE_DIR = Path("~/.hermes/cache/cursor-sdk/").expanduser()
 BRIDGE_ENV_ALLOWLIST = {
     "CURSOR_API_KEY",
     "CURSOR_BASE_URL",
+    "HERMES_CURSOR_API_KEY",
     "HERMES_CURSOR_BRIDGE_TOKEN",
     "HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH",
     "HERMES_CURSOR_BRIDGE_MAX_COMPLETION_TOKENS",
@@ -200,8 +201,8 @@ def _toml_settings(path: Path | None = None) -> dict[str, Any]:
 def _env_settings(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     resolved_env = env if env is not None else os.environ
     mapping = {
-        "HERMES_CURSOR_API_KEY": "api_key",
         "CURSOR_API_KEY": "api_key",
+        "HERMES_CURSOR_API_KEY": "api_key",
         "HERMES_CURSOR_DEFAULT_MODEL": "default_model",
         "HERMES_CURSOR_MODEL": "default_model",
         "HERMES_CURSOR_DEFAULT_CLOUD_REF": "default_cloud_ref",
@@ -240,12 +241,15 @@ def _env_settings(env: Mapping[str, str] | None = None) -> dict[str, Any]:
 def load_settings(
     path: str | Path | None = None, *, env: Mapping[str, str] | None = None
 ) -> Settings:
-    """Load settings from TOML, then overlay environment variables."""
+    """Load settings from TOML, then overlay bridge.env and process env."""
 
-    data = _toml_settings()
-    if path is not None:
-        data.update(_env_settings(parse_bridge_env_file(path)))
-    data.update(_env_settings(env))
+    data = _toml_settings(Path(path) if path is not None else None)
+    env_data = _env_settings(env)
+    settings = _coerce_settings({**data, **env_data})
+    data = dict(data)
+    if settings.bridge_env_file is not None:
+        data.update(_env_settings(parse_bridge_env_file(settings.bridge_env_file)))
+    data.update(env_data)
     return _coerce_settings(data)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 from collections.abc import Mapping
 from os import getenv
@@ -69,10 +70,20 @@ class CursorProfile(ProviderProfile):
             "default_aux_model": self.default_aux_model,
         }
         values.update(overrides)
+        init_kwargs: dict[str, Any] = {}
         try:
-            super().__init__(**values)
-        except TypeError:
-            super().__init__()
+            signature = inspect.signature(super().__init__)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            parameters = signature.parameters
+            if any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+            ):
+                init_kwargs = values
+            else:
+                init_kwargs = {key: value for key, value in values.items() if key in parameters}
+        super().__init__(**init_kwargs)
         for key, value in values.items():
             setattr(self, key, value)
 

@@ -19,32 +19,32 @@ class ToolClient:
         self.calls.append((name, kwargs))
         return ok_result(status="finished", result_text=name, metadata={"kwargs": kwargs})
 
-    def cursor_models(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_models", **kwargs)
+    def list_models(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("list_models", **kwargs)
 
-    def cursor_repositories(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_repositories", **kwargs)
+    def list_repositories(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("list_repositories", **kwargs)
 
-    def cursor_run(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_run", **kwargs)
+    def run_local(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("run_local", **kwargs)
 
-    def cursor_start(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_start", **kwargs)
+    def start_cloud(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("start_cloud", **kwargs)
 
-    def cursor_status(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_status", **kwargs)
+    def status(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("status", **kwargs)
 
-    def cursor_resume(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_resume", **kwargs)
+    def resume_and_send(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("resume_and_send", **kwargs)
 
-    def cursor_cancel(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_cancel", **kwargs)
+    def cancel(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("cancel", **kwargs)
 
-    def cursor_session_send(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_session_send", **kwargs)
+    def session_send(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("session_send", **kwargs)
 
-    def cursor_agent(self, **kwargs: Any) -> dict[str, Any]:
-        return self._record("cursor_agent", **kwargs)
+    def manage_agent(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("manage_agent", **kwargs)
 
 
 def parse(handler: Callable[..., str], args: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -87,7 +87,7 @@ def test_all_handlers_return_parseable_json(
     payload = parse(tools.HANDLERS[name], args, **kwargs)
 
     assert payload["ok"] is True
-    assert payload["result_text"] == name
+    assert payload["result_text"] == tool_client.calls[-1][0]
 
 
 def test_missing_prompt_returns_invalid_args(tool_client: ToolClient) -> None:
@@ -123,9 +123,9 @@ def test_handlers_pass_payload_to_monkeypatched_client(tool_client: ToolClient) 
 
     assert payload["ok"] is True
     call_name, kwargs = tool_client.calls[-1]
-    assert call_name == "cursor_start"
+    assert call_name == "start_cloud"
     assert kwargs["prompt"] == "ship it"
-    assert kwargs["runtime"] == "cloud"
+    assert "runtime" not in kwargs
     assert kwargs["idempotency_key"].startswith("cursor-start-")
 
 
@@ -161,7 +161,7 @@ def test_cursor_start_passes_all_optional_fields(tool_client: ToolClient) -> Non
     assert payload["ok"] is True
     _call_name, kwargs = tool_client.calls[-1]
     assert kwargs["mode"] == "plan"
-    assert kwargs["correlation_id"] == "corr-1"
+    assert kwargs["metadata"] == {"correlation_id": "corr-1"}
     assert kwargs["env_names"] == ["SAFE_ENV"]
     assert kwargs["auto_create_pr"] is True
     assert kwargs["skip_reviewer_request"] is False
@@ -264,6 +264,14 @@ def test_cursor_agent_delete_confirm_mismatch(tool_client: ToolClient) -> None:
     assert "confirm_agent_id" in payload["error"]["message"]
 
 
+def test_cursor_agent_archive_requires_confirmation(tool_client: ToolClient) -> None:
+    payload = parse(tools.cursor_agent, {"action": "archive", "agent_id": "agent-1"})
+
+    assert payload["ok"] is False
+    assert payload["code"] == "invalid_args"
+    assert "confirm_agent_id" in payload["error"]["message"]
+
+
 def test_cursor_agent_delete_confirm_match(tool_client: ToolClient) -> None:
     payload = parse(
         tools.cursor_agent,
@@ -279,6 +287,22 @@ def test_cursor_agent_delete_confirm_match(tool_client: ToolClient) -> None:
     _call_name, kwargs = tool_client.calls[-1]
     assert kwargs["confirm_agent_id"] == "agent-1"
     assert kwargs["runtime"] == "cloud"
+
+
+def test_session_send_allows_stored_session_without_cwd(tool_client: ToolClient) -> None:
+    class Store:
+        def get_session(self, session_key: str) -> dict[str, str] | None:
+            assert session_key == "hermes:s1:-"
+            return {"agent_id": "agent-1"}
+
+    tool_client.store = Store()  # type: ignore[attr-defined]
+
+    payload = parse(tools.cursor_session_send, {"prompt": "continue"}, session_id="s1")
+
+    assert payload["ok"] is True
+    call_name, kwargs = tool_client.calls[-1]
+    assert call_name == "session_send"
+    assert "cwd" not in kwargs
 
 
 def test_json_ok_error_compatibility_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:

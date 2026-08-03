@@ -11,7 +11,7 @@ from hermes_cursor_sdk.results import ok_result
 
 
 class FakeToolClient:
-    def cursor_models(self) -> dict[str, object]:
+    def list_models(self) -> dict[str, object]:
         return ok_result(metadata={"models": []})
 
 

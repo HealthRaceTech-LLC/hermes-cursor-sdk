@@ -14,11 +14,9 @@ from hermes_cursor_sdk.errors import map_exception
 from hermes_cursor_sdk.results import ResultDict, error_result, ok_result
 from hermes_cursor_sdk.schemas import TOOL_SCHEMAS
 
-Handler = Callable[[dict[str, Any]], str]
-
 _CLIENT: CursorSDKClient | None = None
-_AGENT_ACTIONS = {"list", "get", "usage", "list_artifacts", "archive", "unarchive", "delete"}
-_AGENT_ID_ACTIONS = {"get", "list_artifacts", "archive", "unarchive", "delete"}
+_AGENT_ACTIONS = {"list", "get", "archive", "delete", "cancel"}
+_AGENT_ID_ACTIONS = {"get", "archive", "delete", "cancel"}
 _RUNTIMES = {"local", "cloud"}
 _START_MODES = {"agent", "plan"}
 
@@ -225,13 +223,15 @@ def _invoke(method_names: Iterable[str], payload: Mapping[str, Any]) -> Any:
     raise AttributeError(f"CursorSDKClient lacks handler for {', '.join(method_names)}")
 
 
-def _derive_idempotency_key(args: Mapping[str, Any], kwargs: Mapping[str, Any]) -> str:
+def _derive_idempotency_key(
+    args: Mapping[str, Any], kwargs: Mapping[str, Any], repos: list[dict[str, Any]]
+) -> str:
     seed = {
         "correlation_id": args.get("correlation_id"),
         "mode": args.get("mode", "agent"),
         "model": args.get("model"),
         "prompt": args.get("prompt"),
-        "repos": args.get("repos"),
+        "repos": repos,
         "session_id": kwargs.get("session_id"),
         "task_id": kwargs.get("task_id"),
     }
@@ -260,7 +260,7 @@ def cursor_models(args: dict[str, Any], **_: Any) -> Any:
     refresh = _optional_bool(args, "refresh")
     if refresh is not None:
         payload["refresh"] = refresh
-    return _invoke(("cursor_models", "models", "list_models"), payload)
+    return _invoke(("list_models",), payload)
 
 
 @_handler
@@ -269,7 +269,7 @@ def cursor_repositories(args: dict[str, Any], **_: Any) -> Any:
     refresh = _optional_bool(args, "refresh")
     if refresh is not None:
         payload["refresh"] = refresh
-    return _invoke(("cursor_repositories", "repositories", "list_repositories"), payload)
+    return _invoke(("list_repositories",), payload)
 
 
 @_handler
@@ -284,15 +284,15 @@ def cursor_run(args: dict[str, Any], **_: Any) -> Any:
         payload["model"] = model
     if params is not None:
         payload["params"] = params
-    return _invoke(("cursor_run", "run"), payload)
+    return _invoke(("run_local",), payload)
 
 
 @_handler
 def cursor_start(args: dict[str, Any], **kwargs: Any) -> Any:
+    repos = _required_repos(args)
     payload: dict[str, Any] = {
         "prompt": _required_str(args, "prompt"),
-        "repos": _required_repos(args),
-        "runtime": "cloud",
+        "repos": repos,
     }
 
     mode = _optional_enum(args, "mode", _START_MODES)
@@ -308,7 +308,7 @@ def cursor_start(args: dict[str, Any], **kwargs: Any) -> Any:
     if model is not None:
         payload["model"] = model
     if correlation_id is not None:
-        payload["correlation_id"] = correlation_id
+        payload["metadata"] = {"correlation_id": correlation_id}
     if params is not None:
         payload["params"] = params
     if env_names is not None:
@@ -321,8 +321,8 @@ def cursor_start(args: dict[str, Any], **kwargs: Any) -> Any:
         payload["wait"] = wait
 
     idempotency_key = _optional_str(args, "idempotency_key")
-    payload["idempotency_key"] = idempotency_key or _derive_idempotency_key(args, kwargs)
-    return _invoke(("cursor_start", "start"), payload)
+    payload["idempotency_key"] = idempotency_key or _derive_idempotency_key(args, kwargs, repos)
+    return _invoke(("start_cloud",), payload)
 
 
 @_handler
@@ -331,7 +331,7 @@ def cursor_status(args: dict[str, Any], **_: Any) -> Any:
     run_id = _optional_str(args, "run_id")
     if run_id is not None:
         payload["run_id"] = run_id
-    return _invoke(("cursor_status", "status", "get_status"), payload)
+    return _invoke(("status",), payload)
 
 
 @_handler
@@ -346,7 +346,7 @@ def cursor_resume(args: dict[str, Any], **_: Any) -> Any:
         payload["cwd"] = cwd
     if force is not None:
         payload["force"] = force
-    return _invoke(("cursor_resume", "resume"), payload)
+    return _invoke(("resume_and_send",), payload)
 
 
 @_handler
@@ -355,7 +355,7 @@ def cursor_cancel(args: dict[str, Any], **_: Any) -> Any:
     run_id = _optional_str(args, "run_id")
     if run_id is not None:
         payload["run_id"] = run_id
-    return _invoke(("cursor_cancel", "cancel"), payload)
+    return _invoke(("cancel",), payload)
 
 
 @_handler
@@ -369,9 +369,12 @@ def cursor_session_send(args: dict[str, Any], **kwargs: Any) -> Any:
     session_key = _session_key(session_id, task_id, session_tag)
 
     if agent_id is None and cwd is None:
-        raise _InvalidArgs(
-            "cwd is required on the first cursor_session_send turn.", {"field": "cwd"}
-        )
+        store = getattr(_client(), "store", None)
+        get_session = getattr(store, "get_session", None)
+        if not callable(get_session) or not get_session(session_key):
+            raise _InvalidArgs(
+                "cwd is required on the first cursor_session_send turn.", {"field": "cwd"}
+            )
 
     payload: dict[str, Any] = {
         "prompt": _required_str(args, "prompt"),
@@ -399,7 +402,7 @@ def cursor_session_send(args: dict[str, Any], **kwargs: Any) -> Any:
         payload["force"] = force
     if close is not None:
         payload["close"] = close
-    return _invoke(("cursor_session_send", "session_send", "send_session"), payload)
+    return _invoke(("session_send",), payload)
 
 
 @_handler
@@ -421,16 +424,16 @@ def cursor_agent(args: dict[str, Any], **_: Any) -> Any:
 
     if action in _AGENT_ID_ACTIONS and agent_id is None:
         raise _InvalidArgs(f"agent_id is required for {action}.", {"field": "agent_id"})
-    if action == "delete":
+    if action in {"archive", "delete"}:
         confirm_agent_id = _optional_str(args, "confirm_agent_id")
         if confirm_agent_id != agent_id:
             raise _InvalidArgs(
-                "confirm_agent_id must match agent_id to delete.",
+                f"confirm_agent_id must match agent_id to {action}.",
                 {"field": "confirm_agent_id"},
             )
         payload["confirm_agent_id"] = confirm_agent_id
 
-    return _invoke(("cursor_agent", "agent"), payload)
+    return _invoke(("manage_agent",), payload)
 
 
 HANDLERS: dict[str, Callable[..., str]] = {

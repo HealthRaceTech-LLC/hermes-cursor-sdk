@@ -203,8 +203,9 @@ class CursorSDKClient:
         try:
             if idempotency_key:
                 existing = self.store.get_idempotency(f"create:{idempotency_key}")
-                if existing and existing.get("payload"):
-                    return cast(ResultDict, existing["payload"])
+                payload = existing.get("payload") if existing else None
+                if isinstance(payload, dict) and payload.get("ok") is True:
+                    return cast(ResultDict, payload)
             api_key = require_api_key(self.settings)
             self._validate_env_names(env_names)
             cloud_repos = self._validate_cloud_repos(repos)
@@ -240,7 +241,7 @@ class CursorSDKClient:
                 result = self._result_from_run(
                     terminal, runtime="cloud", model=model_selection, agent_id=agent_id
                 )
-                if idempotency_key:
+                if idempotency_key and result.get("ok") is True:
                     self.store.put_idempotency(
                         f"create:{idempotency_key}",
                         agent_id=agent_id,
@@ -300,8 +301,8 @@ class CursorSDKClient:
         force: bool = False,
         close: bool = False,
     ) -> ResultDict:
+        resolved_agent_id = agent_id
         try:
-            resolved_agent_id = agent_id
             if not resolved_agent_id and session_key:
                 session = self.store.get_session(session_key)
                 if session:
@@ -321,11 +322,11 @@ class CursorSDKClient:
                 params=params,
                 wait=wait,
             )
-            if close and session_key:
+            if close and session_key and result.get("ok") is True:
                 self.store.delete_session(session_key)
             return result
         except Exception as exc:
-            return error_result(map_exception(exc), agent_id=agent_id)
+            return error_result(map_exception(exc), agent_id=resolved_agent_id)
 
     def status(self, *, agent_id: str, run_id: str | None = None) -> ResultDict:
         try:
@@ -580,6 +581,8 @@ class CursorSDKClient:
             "ref": ref,
             "starting_ref": ref,
         }
+        if repo.get("pr_url"):
+            payload["pr_url"] = repo["pr_url"]
         return self._construct("CloudRepository", payload)
 
     def _construct(self, class_name: str, payload: dict[str, Any]) -> Any:
@@ -656,11 +659,33 @@ class CursorSDKClient:
 
     def _agent_send(self, agent: Any, prompt: str, **kwargs: Any) -> Any:
         send = agent.send
+        call_kwargs = {key: value for key, value in kwargs.items() if value is not None}
         try:
-            return send(
-                prompt, **{key: value for key, value in kwargs.items() if value is not None}
-            )
+            return send(prompt, **call_kwargs)
         except TypeError:
+            try:
+                signature = inspect.signature(send)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None and not any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            ):
+                accepted = {
+                    key: value for key, value in call_kwargs.items() if key in signature.parameters
+                }
+                if accepted != call_kwargs:
+                    try:
+                        return send(prompt, **accepted)
+                    except TypeError:
+                        pass
+            reduced = dict(call_kwargs)
+            for key in list(call_kwargs):
+                reduced.pop(key, None)
+                try:
+                    return send(prompt, **reduced)
+                except TypeError:
+                    continue
             return send(prompt)
 
     def _wait(self, run: Any) -> Any:
@@ -682,7 +707,15 @@ class CursorSDKClient:
         text = extract_assistant_text(run)
         usage = _value(run, "usage")
         if agent_id:
-            self.store.upsert_agent(agent_id, runtime=runtime, model=model)
+            existing = self.store.get_agent(agent_id) or {}
+            self.store.upsert_agent(
+                agent_id,
+                runtime=runtime,
+                cwd=existing.get("cwd"),
+                repos=existing.get("repos"),
+                model=model if model is not None else existing.get("model"),
+                auto_create_pr=bool(existing.get("auto_create_pr", False)),
+            )
         if run_id and agent_id:
             self.store.upsert_run(run_id, agent_id=agent_id, status=status, usage=usage)
             if text:

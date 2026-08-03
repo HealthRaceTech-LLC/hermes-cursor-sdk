@@ -45,6 +45,41 @@ def test_env_overrides_toml_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert settings.store_dir.is_absolute()
 
 
+def test_hermes_api_key_overrides_cursor_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "missing.toml")
+
+    settings = load_settings(
+        env={"CURSOR_API_KEY": "cursor-key", "HERMES_CURSOR_API_KEY": "hermes-key"}
+    )
+
+    assert settings.api_key == "hermes-key"
+
+
+def test_bridge_env_file_overlays_after_settings_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / "bridge.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "CURSOR_API_KEY=bridge-key",
+                "HERMES_CURSOR_BRIDGE_TOKEN=bridge-token",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(f'bridge_env_file = "{env_file}"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_file)
+
+    settings = load_settings(env={"HERMES_CURSOR_API_KEY": "process-key"})
+
+    assert settings.api_key == "process-key"
+    assert settings.bridge_token == "bridge-token"
+
+
 def test_load_settings_reads_toml_from_temp_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
