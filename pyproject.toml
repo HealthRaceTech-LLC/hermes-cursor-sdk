@@ -60,7 +60,7 @@ packages = ["src/hermes_cursor_sdk"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config --cov=hermes_cursor_sdk --cov-report=term-missing --cov-report=xml --cov-fail-under=0"
+addopts = "-ra --strict-markers --strict-config --cov=hermes_cursor_sdk --cov-report=term-missing --cov-report=xml --cov-fail-under=85"
 markers = [
   "integration: tests that exercise process or network boundaries",
   "contract: tests that validate Hermes and Cursor SDK compatibility",
@@ -78,7 +78,7 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 0
+fail_under = 85
 show_missing = true
 skip_covered = true
 exclude_lines = [
