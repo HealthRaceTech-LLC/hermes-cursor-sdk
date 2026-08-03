@@ -170,16 +170,28 @@ def test_setup_writes_env_and_installs_provider(
 ) -> None:
     monkeypatch.delenv("HERMES_CURSOR_BRIDGE_TOKEN", raising=False)
     project = isolated_cli_paths / "project"
+    config_path = isolated_cli_paths / "cursor-sdk" / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        'allowed_local_roots = ["/tmp/keep"]\nbridge_port = 8787\n',
+        encoding="utf-8",
+    )
 
     assert cli.main(["setup", "--cwd", str(project), "--no-service", "--token", "setup-token"]) == 0
 
     bridge_env = isolated_cli_paths / "cursor-sdk" / "bridge.env"
     hermes_env = isolated_cli_paths / ".hermes" / ".env"
     assert bridge_env.is_file()
-    assert "HERMES_CURSOR_BRIDGE_TOKEN=setup-token" in bridge_env.read_text(encoding="utf-8")
+    parsed = config.parse_bridge_env_file(bridge_env)
+    assert parsed["HERMES_CURSOR_BRIDGE_TOKEN"] == "setup-token"
+    assert parsed["HERMES_CURSOR_BRIDGE_CWD"] == str(project.resolve())
     assert hermes_env.is_file()
     assert "HERMES_CURSOR_BRIDGE_TOKEN=setup-token" in hermes_env.read_text(encoding="utf-8")
     assert cli.provider_status()["installed"] is True
+    config_text = config_path.read_text(encoding="utf-8")
+    assert 'allowed_local_roots = ["/tmp/keep"]' in config_text
+    assert "bridge_port = 8787" in config_text
+    assert 'bridge_cwd = "' in config_text
     assert "Phase 2 setup complete" in capsys.readouterr().out
 
 

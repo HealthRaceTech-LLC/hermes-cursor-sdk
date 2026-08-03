@@ -53,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--provider-mode", action="store_true", help="Validate provider mode settings."
     )
+    doctor.add_argument(
+        "--profile",
+        help="Hermes profile name used when checking the provider shim path.",
+    )
 
     bridge = subparsers.add_parser("bridge", help="Start the OpenAI-compatible bridge.")
     bridge.add_argument(
@@ -127,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "status":
             return cmd_status()
         if args.command == "doctor":
-            return cmd_doctor(provider_mode=args.provider_mode)
+            return cmd_doctor(provider_mode=args.provider_mode, profile=args.profile)
         if args.command == "bridge":
             from hermes_cursor_sdk.bridge.server import main as bridge_main
 
@@ -166,23 +170,24 @@ def cmd_status() -> int:
     return 0
 
 
-def cmd_doctor(*, provider_mode: bool) -> int:
+def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
     settings = load_settings()
+    provider = provider_status(profile=profile)
     issues: list[str] = []
     if not settings.bridge_token:
         issues.append("HERMES_CURSOR_BRIDGE_TOKEN is not set")
     if settings.bridge_expose:
         issues.append("bridge is configured for non-loopback exposure")
-    if provider_mode and not provider_status()["installed"]:
+    if provider_mode and not provider["installed"]:
         issues.append("provider shim is not installed (run: hermes-cursor setup --cwd …)")
     if provider_mode and settings.bridge_cwd is None:
         issues.append("HERMES_CURSOR_BRIDGE_CWD is not set")
 
     print("Hermes Cursor SDK doctor")
     print(f"version: {__version__}")
-    print(f"hermes_home: {resolve_hermes_home()}")
+    print(f"hermes_home: {resolve_hermes_home(profile=profile)}")
     print(f"bridge_url: http://{settings.bridge_host}:{settings.bridge_port}/v1")
-    print(f"provider_installed: {provider_status()['installed']}")
+    print(f"provider_installed: {provider['installed']}")
     print(f"service_installed: {service_status()['installed']}")
 
     if provider_mode:
@@ -307,20 +312,39 @@ def upsert_env_file(path: Path, values: Mapping[str, str]) -> None:
 
 
 def write_config_toml(*, bridge_cwd: Path, bridge_env_file: Path) -> None:
+    """Upsert only bridge path keys; leave unrelated TOML content untouched."""
+
     path = CONFIG_PATH.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing: dict[str, str] = {}
-    if path.is_file():
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            existing[key.strip()] = value.strip().strip('"')
-    existing["bridge_cwd"] = str(bridge_cwd)
-    existing["bridge_env_file"] = str(bridge_env_file)
-    rendered = "\n".join(f'{key} = "{value}"' for key, value in sorted(existing.items())) + "\n"
-    path.write_text(rendered, encoding="utf-8")
+    updates = {
+        "bridge_cwd": str(bridge_cwd),
+        "bridge_env_file": str(bridge_env_file),
+    }
+    if not path.is_file():
+        path.write_text(
+            "\n".join(f'{key} = "{value}"' for key, value in updates.items()) + "\n",
+            encoding="utf-8",
+        )
+        return
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        replaced = False
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                out.append(f'{key} = "{updates[key]}"')
+                seen.add(key)
+                replaced = True
+        if not replaced:
+            out.append(line)
+    for key, value in updates.items():
+        if key not in seen:
+            out.append(f'{key} = "{value}"')
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 def cmd_provider(command: str, *, profile: str | None = None) -> int:
