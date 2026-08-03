@@ -243,6 +243,40 @@ def test_upsert_hermes_config_provider_preserves_siblings(tmp_path: Path) -> Non
     assert "model:" in text
 
 
+def test_upsert_refuses_unmanaged_cursor_provider(tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "providers:\n  cursor:\n    api: http://hand-maintained.test/v1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cli.CLIError, match=r"unmanaged providers\.cursor"):
+        cli.upsert_hermes_config_provider(
+            hermes_home=hermes_home,
+            base_url="http://127.0.0.1:8787/v1",
+        )
+
+    assert cli.remove_hermes_config_provider(hermes_home=hermes_home) is None
+    text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert "hand-maintained.test" in text
+
+
+def test_resolve_provider_base_url_matches_reported_bridge_url(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HERMES_CURSOR_BASE_URL", raising=False)
+    bridge_env = isolated_cli_paths / "cursor-sdk" / "bridge.env"
+    bridge_env.parent.mkdir(parents=True, exist_ok=True)
+    bridge_env.write_text(
+        "CURSOR_API_KEY=k\nHERMES_CURSOR_BASE_URL=http://127.0.0.1:9999/v1\n",
+        encoding="utf-8",
+    )
+
+    assert cli.resolve_provider_base_url() == "http://127.0.0.1:9999/v1"
+
+
 def test_setup_requires_api_key(
     isolated_cli_paths: Path,
     monkeypatch: pytest.MonkeyPatch,

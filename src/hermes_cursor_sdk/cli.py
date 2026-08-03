@@ -558,19 +558,21 @@ def hermes_config_path(*, profile: str | None = None, hermes_home: Path | None =
 
 
 def resolve_provider_base_url(*, profile: str | None = None, base_url: str | None = None) -> str:
+    """Resolve the bridge base URL written into ``providers.cursor.api``.
+
+    Matches ``status`` / ``doctor`` via :func:`resolve_reported_bridge_url` so
+    config.toml host/port and bridge.env stay aligned with the live bridge.
+    """
+
     if base_url and base_url.strip():
         return base_url.strip().rstrip("/")
+    settings = load_settings()
     hermes_home = resolve_hermes_home(profile=profile)
     profile_env = read_env_file(hermes_home / ".env")
-    bridge_env = read_bridge_env_map()
-    resolved = (
-        os.environ.get("HERMES_CURSOR_BASE_URL")
-        or profile_env.get("HERMES_CURSOR_BASE_URL")
-        or bridge_env.get("HERMES_CURSOR_BASE_URL")
-        or CursorProfile().base_url
-        or "http://127.0.0.1:8787/v1"
+    bridge_env = read_bridge_env_map(settings)
+    return resolve_reported_bridge_url(
+        settings=settings, profile_env=profile_env, bridge_env=bridge_env
     )
-    return str(resolved).strip().rstrip("/")
 
 
 def cursor_provider_config_block(
@@ -591,10 +593,13 @@ def cursor_provider_config_block(
     )
 
 
-_CURSOR_PROVIDER_ENTRY_RE = re.compile(
-    r"(?m)"
-    r"(?:^  # " + re.escape(CONFIG_PROVIDER_MARKER) + r"\n)?"
-    r"^  cursor:\n"
+_MANAGED_CURSOR_PROVIDER_ENTRY_RE = re.compile(
+    r"(?m)^  # " + re.escape(CONFIG_PROVIDER_MARKER) + r"\n"
+    r"  cursor:\n"
+    r"(?:    .*\n)*"
+)
+_UNMANAGED_CURSOR_PROVIDER_ENTRY_RE = re.compile(
+    r"(?m)^  cursor:\n"
     r"(?:    .*\n)*"
 )
 
@@ -658,8 +663,13 @@ def upsert_hermes_config_provider(
     if not existing.endswith("\n"):
         existing += "\n"
 
-    if _CURSOR_PROVIDER_ENTRY_RE.search(existing):
-        new_section = _CURSOR_PROVIDER_ENTRY_RE.sub(block, existing, count=1)
+    if _MANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
+        new_section = _MANAGED_CURSOR_PROVIDER_ENTRY_RE.sub(block, existing, count=1)
+    elif _UNMANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
+        raise CLIError(
+            f"refusing to overwrite unmanaged providers.cursor in {path}; "
+            f"remove it manually or keep it and skip provider install"
+        )
     else:
         # Keep sibling provider entries; append our managed cursor block.
         header, _, body = existing.partition("\n")
@@ -677,7 +687,7 @@ def upsert_hermes_config_provider(
 
 
 def remove_hermes_config_provider(*, hermes_home: Path) -> Path | None:
-    """Remove the managed ``providers.cursor`` entry when present."""
+    """Remove only the managed ``providers.cursor`` entry when present."""
 
     path = hermes_home / "config.yaml"
     if not path.exists():
@@ -688,7 +698,7 @@ def remove_hermes_config_provider(*, hermes_home: Path) -> Path | None:
         return None
     start, end = span
     section = text[start:end]
-    new_section, count = _CURSOR_PROVIDER_ENTRY_RE.subn("", section, count=1)
+    new_section, count = _MANAGED_CURSOR_PROVIDER_ENTRY_RE.subn("", section, count=1)
     if count == 0:
         return None
 
@@ -743,6 +753,15 @@ def install_provider(*, profile: str | None = None, base_url: str | None = None)
     if destination.exists() and not is_managed_provider(destination):
         raise CLIError(f"refusing to overwrite unrelated provider files at {destination}")
 
+    # Write config first so a failed shim install never leaves a shim without
+    # providers.cursor (doctor would then fail provider-mode until re-run).
+    resolved_base_url = resolve_provider_base_url(profile=profile, base_url=base_url)
+    config_path = upsert_hermes_config_provider(
+        hermes_home=resolve_hermes_home(profile=profile),
+        base_url=resolved_base_url,
+    )
+    print(f"updated Hermes config providers.cursor: {config_path}")
+
     parent = destination.parent
     parent.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix=".cursor-provider-", dir=parent))
@@ -764,12 +783,6 @@ def install_provider(*, profile: str | None = None, base_url: str | None = None)
         raise
 
     print(f"installed provider shim: {destination}")
-    resolved_base_url = resolve_provider_base_url(profile=profile, base_url=base_url)
-    config_path = upsert_hermes_config_provider(
-        hermes_home=resolve_hermes_home(profile=profile),
-        base_url=resolved_base_url,
-    )
-    print(f"updated Hermes config providers.cursor: {config_path}")
 
 
 def uninstall_provider(*, profile: str | None = None) -> None:
