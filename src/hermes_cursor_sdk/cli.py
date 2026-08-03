@@ -605,9 +605,17 @@ _UNMANAGED_CURSOR_PROVIDER_ENTRY_RE = re.compile(
 
 
 def _providers_section_span(text: str) -> tuple[int, int] | None:
-    """Return ``[start, end)`` offsets of the top-level ``providers:`` mapping."""
+    """Return ``[start, end)`` offsets of the top-level ``providers:`` mapping.
 
-    match = re.search(r"(?m)^providers:\s*(?:#.*)?$", text)
+    Handles both block form (``providers:\\n  …``) and inline empties
+    (``providers: {}`` / ``providers: null``) so we never append a second
+    ``providers:`` key beside an existing one.
+    """
+
+    match = re.search(
+        r"(?m)^providers:\s*(?:\{\s*\}|null|~)?\s*(?:#.*)?$",
+        text,
+    )
     if match is None:
         return None
     start = match.start()
@@ -663,7 +671,14 @@ def upsert_hermes_config_provider(
     if not existing.endswith("\n"):
         existing += "\n"
 
-    if _MANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
+    # Inline empties like `providers: {}` / `providers: null` have no child
+    # mapping body — replace the whole section with a block-form entry.
+    first_line = existing.split("\n", 1)[0]
+    if re.fullmatch(r"providers:\s*(?:\{\s*\}|null|~)?\s*(?:#.*)?", first_line) and not re.search(
+        r"(?m)^  \S", existing
+    ):
+        new_section = "providers:\n" + block
+    elif _MANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
         new_section = _MANAGED_CURSOR_PROVIDER_ENTRY_RE.sub(block, existing, count=1)
     elif _UNMANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
         raise CLIError(

@@ -262,6 +262,26 @@ def test_upsert_refuses_unmanaged_cursor_provider(tmp_path: Path) -> None:
     assert "hand-maintained.test" in text
 
 
+def test_upsert_replaces_inline_empty_providers_map(tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\nproviders: {}\nagent:\n  max_turns: 1\n",
+        encoding="utf-8",
+    )
+
+    cli.upsert_hermes_config_provider(
+        hermes_home=hermes_home,
+        base_url="http://127.0.0.1:8787/v1",
+    )
+    text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert text.count("providers:") == 1
+    assert "providers: {}" not in text
+    assert "cursor:" in text
+    assert "model:" in text
+    assert "agent:" in text
+
+
 def test_resolve_provider_base_url_matches_reported_bridge_url(
     isolated_cli_paths: Path,
     monkeypatch: pytest.MonkeyPatch,
