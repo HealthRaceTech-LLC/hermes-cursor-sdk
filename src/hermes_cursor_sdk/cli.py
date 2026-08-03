@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -32,6 +33,10 @@ from hermes_cursor_sdk.provider import CursorProfile
 
 PLUGIN_MARKER = ".hermes-cursor-sdk"
 SERVICE_LABEL = "com.hermes.cursor-bridge"
+CONFIG_PROVIDER_MARKER = "hermes-cursor-sdk-managed-provider"
+DEFAULT_PROVIDER_ID = "cursor"
+DEFAULT_PROVIDER_DISPLAY_NAME = "Cursor (SDK bridge)"
+DEFAULT_PROVIDER_KEY_ENV = "HERMES_CURSOR_BRIDGE_TOKEN"
 
 # Tests monkeypatch this to a temp path. ``None`` means resolve from Hermes home.
 PLUGIN_DIR: Path | None = None
@@ -264,12 +269,19 @@ def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
         issues.append("provider shim is not installed (run: hermes-cursor setup --cwd …)")
     if provider_mode and not bridge_cwd:
         issues.append("HERMES_CURSOR_BRIDGE_CWD is not set")
+    config_provider = hermes_config_provider_status(profile=profile)
+    if provider_mode and not config_provider["configured"]:
+        issues.append(
+            "config.yaml is missing providers.cursor "
+            "(Desktop model switch needs it — re-run: hermes-cursor setup --cwd …)"
+        )
 
     print("Hermes Cursor SDK doctor")
     print(f"version: {__version__}")
     print(f"hermes_home: {hermes_home}")
     print(f"bridge_url: {bridge_url}")
     print(f"provider_installed: {provider['installed']}")
+    print(f"config_provider: {config_provider['state']}")
     print(f"service_installed: {service_status()['installed']}")
 
     if provider_mode:
@@ -389,7 +401,7 @@ def cmd_setup(
     os.environ["HERMES_CURSOR_BASE_URL"] = base_url
     os.environ["HERMES_CURSOR_BRIDGE_CWD"] = str(project)
 
-    install_provider(profile=profile)
+    install_provider(profile=profile, base_url=base_url)
     if install_service_unit:
         install_service()
         if load_service:
@@ -398,6 +410,7 @@ def cmd_setup(
     print("Phase 2 setup complete.")
     print(f"hermes_home: {hermes_home}")
     print(f"provider: {plugin_dir(profile=profile)}")
+    print(f"config_provider: {hermes_home / 'config.yaml'} → providers.cursor")
     print(
         "Next: restart Hermes Desktop / gateway, then pick Cursor (SDK bridge) in the model picker."
     )
@@ -533,23 +546,236 @@ def write_config_toml(*, bridge_cwd: Path, bridge_env_file: Path) -> None:
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+def yaml_double_quoted(value: str) -> str:
+    """Return a double-quoted YAML scalar (JSON string form is YAML-safe)."""
+
+    return json.dumps(value)
+
+
+def hermes_config_path(*, profile: str | None = None, hermes_home: Path | None = None) -> Path:
+    home = hermes_home or resolve_hermes_home(profile=profile)
+    return home / "config.yaml"
+
+
+def resolve_provider_base_url(*, profile: str | None = None, base_url: str | None = None) -> str:
+    """Resolve the bridge base URL written into ``providers.cursor.api``.
+
+    Matches ``status`` / ``doctor`` via :func:`resolve_reported_bridge_url` so
+    config.toml host/port and bridge.env stay aligned with the live bridge.
+    """
+
+    if base_url and base_url.strip():
+        return base_url.strip().rstrip("/")
+    settings = load_settings()
+    hermes_home = resolve_hermes_home(profile=profile)
+    profile_env = read_env_file(hermes_home / ".env")
+    bridge_env = read_bridge_env_map(settings)
+    return resolve_reported_bridge_url(
+        settings=settings, profile_env=profile_env, bridge_env=bridge_env
+    )
+
+
+def cursor_provider_config_block(
+    *,
+    base_url: str,
+    key_env: str = DEFAULT_PROVIDER_KEY_ENV,
+    display_name: str = DEFAULT_PROVIDER_DISPLAY_NAME,
+    provider_id: str = DEFAULT_PROVIDER_ID,
+) -> str:
+    """Render the managed ``providers.<id>`` YAML block (2-space indent under providers)."""
+
+    return (
+        f"  # {CONFIG_PROVIDER_MARKER}\n"
+        f"  {provider_id}:\n"
+        f"    name: {yaml_double_quoted(display_name)}\n"
+        f"    api: {yaml_double_quoted(base_url.rstrip('/'))}\n"
+        f"    key_env: {yaml_double_quoted(key_env)}\n"
+    )
+
+
+_MANAGED_CURSOR_PROVIDER_ENTRY_RE = re.compile(
+    r"(?m)^  # " + re.escape(CONFIG_PROVIDER_MARKER) + r"\n"
+    r"  cursor:\n"
+    r"(?:    .*\n)*"
+)
+_UNMANAGED_CURSOR_PROVIDER_ENTRY_RE = re.compile(
+    r"(?m)^  cursor:\n"
+    r"(?:    .*\n)*"
+)
+
+
+def _providers_section_span(text: str) -> tuple[int, int] | None:
+    """Return ``[start, end)`` offsets of the top-level ``providers:`` mapping.
+
+    Handles both block form (``providers:\\n  …``) and inline empties
+    (``providers: {}`` / ``providers: null``) so we never append a second
+    ``providers:`` key beside an existing one.
+    """
+
+    match = re.search(
+        r"(?m)^providers:\s*(?:\{\s*\}|null|~)?\s*(?:#.*)?$",
+        text,
+    )
+    if match is None:
+        return None
+    start = match.start()
+    rest = text[match.end() :]
+    next_key = re.search(r"(?m)^[A-Za-z_][\w-]*:", rest)
+    end = match.end() + next_key.start() if next_key else len(text)
+    return start, end
+
+
+def _providers_body_has_other_entries(body: str) -> bool:
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped in {"{}", "null", "~"}:
+            continue
+        return True
+    return False
+
+
+def upsert_hermes_config_provider(
+    *,
+    hermes_home: Path,
+    base_url: str,
+    key_env: str = DEFAULT_PROVIDER_KEY_ENV,
+) -> Path:
+    """Ensure ``providers.cursor`` exists so Desktop model switch can resolve it.
+
+    Hermes plugin discovery can list Cursor in the Models picker, but
+    ``resolve_provider_full`` (used by model switch) only accepts models.dev /
+    overlays / ``config.yaml`` ``providers:``. Writing this entry closes that gap.
+    """
+
+    path = hermes_home / "config.yaml"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    block = cursor_provider_config_block(base_url=base_url, key_env=key_env)
+    section = "providers:\n" + block
+
+    if not path.exists():
+        path.write_text(section, encoding="utf-8")
+        return path
+
+    text = path.read_text(encoding="utf-8")
+    span = _providers_section_span(text)
+    if span is None:
+        prefix = text if text.endswith("\n") or not text else text + "\n"
+        path.write_text(prefix + "\n" + section, encoding="utf-8")
+        return path
+
+    start, end = span
+    existing = text[start:end]
+    # Drop a trailing incomplete line with no newline so replacements stay clean.
+    if not existing.endswith("\n"):
+        existing += "\n"
+
+    # Inline empties like `providers: {}` / `providers: null` have no child
+    # mapping body — replace the whole section with a block-form entry.
+    first_line = existing.split("\n", 1)[0]
+    if re.fullmatch(r"providers:\s*(?:\{\s*\}|null|~)?\s*(?:#.*)?", first_line) and not re.search(
+        r"(?m)^  \S", existing
+    ):
+        new_section = "providers:\n" + block
+    elif _MANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
+        new_section = _MANAGED_CURSOR_PROVIDER_ENTRY_RE.sub(block, existing, count=1)
+    elif _UNMANAGED_CURSOR_PROVIDER_ENTRY_RE.search(existing):
+        raise CLIError(
+            f"refusing to overwrite unmanaged providers.cursor in {path}; "
+            f"remove it manually or keep it and skip provider install"
+        )
+    else:
+        # Keep sibling provider entries; append our managed cursor block.
+        header, _, body = existing.partition("\n")
+        if body.strip() in {"", "{}", "null", "~"}:
+            new_section = header + "\n" + block
+        else:
+            if not body.endswith("\n"):
+                body += "\n"
+            new_section = header + "\n" + body + block
+
+    if not new_section.endswith("\n"):
+        new_section += "\n"
+    path.write_text(text[:start] + new_section + text[end:], encoding="utf-8")
+    return path
+
+
+def remove_hermes_config_provider(*, hermes_home: Path) -> Path | None:
+    """Remove only the managed ``providers.cursor`` entry when present."""
+
+    path = hermes_home / "config.yaml"
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    span = _providers_section_span(text)
+    if span is None:
+        return None
+    start, end = span
+    section = text[start:end]
+    new_section, count = _MANAGED_CURSOR_PROVIDER_ENTRY_RE.subn("", section, count=1)
+    if count == 0:
+        return None
+
+    _, _, body = new_section.partition("\n")
+    if _providers_body_has_other_entries(body):
+        replacement = new_section if new_section.endswith("\n") else new_section + "\n"
+    else:
+        replacement = ""
+
+    new_text = text[:start] + replacement + text[end:]
+    new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+    path.write_text(new_text, encoding="utf-8")
+    return path
+
+
+def hermes_config_provider_status(*, profile: str | None = None) -> dict[str, Any]:
+    path = hermes_config_path(profile=profile)
+    if not path.exists():
+        return {"configured": False, "state": "missing-config", "path": str(path)}
+    text = path.read_text(encoding="utf-8")
+    span = _providers_section_span(text)
+    if span is None:
+        return {"configured": False, "state": "missing-providers", "path": str(path)}
+    section = text[span[0] : span[1]]
+    configured = ("\n  cursor:" in section) or section.startswith("providers:\n  cursor:")
+    return {
+        "configured": configured,
+        "state": "configured" if configured else "missing-cursor",
+        "path": str(path),
+        "managed": CONFIG_PROVIDER_MARKER in section,
+    }
+
+
 def cmd_provider(command: str, *, profile: str | None = None) -> int:
     if command == "install":
         install_provider(profile=profile)
     elif command == "uninstall":
         uninstall_provider(profile=profile)
     elif command == "status":
-        status = provider_status(profile=profile)
+        status = {
+            **provider_status(profile=profile),
+            "config_provider": hermes_config_provider_status(profile=profile),
+        }
         print(json.dumps(status, indent=2, sort_keys=True))
     else:
         raise CLIError(f"unknown provider command: {command}")
     return 0
 
 
-def install_provider(*, profile: str | None = None) -> None:
+def install_provider(*, profile: str | None = None, base_url: str | None = None) -> None:
     destination = plugin_dir(profile=profile)
     if destination.exists() and not is_managed_provider(destination):
         raise CLIError(f"refusing to overwrite unrelated provider files at {destination}")
+
+    # Write config first so a failed shim install never leaves a shim without
+    # providers.cursor (doctor would then fail provider-mode until re-run).
+    resolved_base_url = resolve_provider_base_url(profile=profile, base_url=base_url)
+    config_path = upsert_hermes_config_provider(
+        hermes_home=resolve_hermes_home(profile=profile),
+        base_url=resolved_base_url,
+    )
+    print(f"updated Hermes config providers.cursor: {config_path}")
 
     parent = destination.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -576,13 +802,17 @@ def install_provider(*, profile: str | None = None) -> None:
 
 def uninstall_provider(*, profile: str | None = None) -> None:
     destination = plugin_dir(profile=profile)
-    if not destination.exists():
+    if destination.exists():
+        if not is_managed_provider(destination):
+            raise CLIError(f"refusing to remove unrelated provider files at {destination}")
+        shutil.rmtree(destination)
+        print(f"removed provider shim: {destination}")
+    else:
         print(f"provider shim not installed: {destination}")
-        return
-    if not is_managed_provider(destination):
-        raise CLIError(f"refusing to remove unrelated provider files at {destination}")
-    shutil.rmtree(destination)
-    print(f"removed provider shim: {destination}")
+
+    config_path = remove_hermes_config_provider(hermes_home=resolve_hermes_home(profile=profile))
+    if config_path is not None:
+        print(f"removed Hermes config providers.cursor: {config_path}")
 
 
 def provider_status(*, profile: str | None = None) -> dict[str, Any]:

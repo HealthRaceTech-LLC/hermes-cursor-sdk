@@ -59,9 +59,14 @@ def test_fetch_models_with_urllib_mock(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(provider, "urlopen", fake_urlopen)
 
-    models = CursorProfile().fetch_models("http://bridge.test/v1", token="bridge-token", timeout=3)
+    # Hermes calls fetch_models(api_key=..., base_url=...) — keyword-only.
+    models = CursorProfile().fetch_models(
+        api_key="bridge-token",
+        base_url="http://bridge.test/v1",
+        timeout=3,
+    )
 
-    assert models == [{"id": "composer-2.5"}, {"id": "gpt-5"}]
+    assert models == ["composer-2.5", "gpt-5"]
     assert captured["url"] == "http://bridge.test/v1/models"
     assert captured["headers"]["Authorization"] == "Bearer bridge-token"
     assert captured["timeout"] == 3
@@ -70,8 +75,7 @@ def test_fetch_models_with_urllib_mock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_models_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HERMES_CURSOR_BRIDGE_TOKEN", raising=False)
 
-    with pytest.raises(RuntimeError, match="BRIDGE_TOKEN"):
-        CursorProfile().fetch_models("http://bridge.test/v1", token=None)
+    assert CursorProfile().fetch_models(api_key=None, base_url="http://bridge.test/v1") is None
 
 
 def test_fetch_models_rejects_bad_payload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,30 +83,27 @@ def test_fetch_models_rejects_bad_payload(monkeypatch: pytest.MonkeyPatch) -> No
         provider, "urlopen", lambda *_args, **_kwargs: FakeResponse({"data": "bad"})
     )
 
-    with pytest.raises(RuntimeError, match="data array"):
-        CursorProfile().fetch_models("http://bridge.test/v1", token="token")
+    assert CursorProfile().fetch_models(api_key="token", base_url="http://bridge.test/v1") is None
 
 
 @pytest.mark.parametrize(
-    ("exc", "message"),
+    "exc",
     [
-        (HTTPError("http://bridge.test/v1/models", 500, "boom", {}, None), "HTTP 500"),
-        (URLError("offline"), "model fetch failed"),
-        (json.JSONDecodeError("bad", "not-json", 0), "model fetch failed"),
+        HTTPError("http://bridge.test/v1/models", 500, "boom", {}, None),
+        URLError("offline"),
+        json.JSONDecodeError("bad", "not-json", 0),
     ],
 )
 def test_fetch_models_maps_url_errors(
     monkeypatch: pytest.MonkeyPatch,
     exc: Exception,
-    message: str,
 ) -> None:
     def fail(*_args: Any, **_kwargs: Any) -> Any:
         raise exc
 
     monkeypatch.setattr(provider, "urlopen", fail)
 
-    with pytest.raises(RuntimeError, match=message):
-        CursorProfile().fetch_models("http://bridge.test/v1", token="token")
+    assert CursorProfile().fetch_models(api_key="token", base_url="http://bridge.test/v1") is None
 
 
 def test_register_cursor_provider_returns_cursor_profile() -> None:
