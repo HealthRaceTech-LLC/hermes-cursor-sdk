@@ -266,6 +266,8 @@ def test_resolve_hermes_home_prefers_env_then_active_profile(
         config.resolve_hermes_home(profile="other")
         == (tmp_path / ".hermes" / "profiles" / "other").resolve()
     )
+    with pytest.raises(config.ConfigurationError, match="path separators"):
+        config.resolve_hermes_home(profile="../escape")
 
 
 def test_load_settings_auto_loads_default_bridge_env(

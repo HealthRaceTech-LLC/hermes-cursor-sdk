@@ -269,6 +269,9 @@ def load_settings(
     return _coerce_settings(data)
 
 
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
 def resolve_hermes_home(*, profile: str | None = None) -> Path:
     """Resolve the active Hermes home directory for provider-shim installs.
 
@@ -283,7 +286,15 @@ def resolve_hermes_home(*, profile: str | None = None) -> Path:
         name = profile.strip()
         if not name:
             raise ConfigurationError("profile name must not be empty")
-        return (Path.home() / ".hermes" / "profiles" / name).expanduser().resolve()
+        if not _PROFILE_NAME_RE.fullmatch(name):
+            raise ConfigurationError(
+                "profile name must be alphanumeric (plus _/-), without path separators"
+            )
+        root = (Path.home() / ".hermes" / "profiles").expanduser().resolve()
+        candidate = (root / name).resolve()
+        if not candidate.is_relative_to(root):
+            raise ConfigurationError("profile name escapes the profiles directory")
+        return candidate
 
     env_home = os.environ.get("HERMES_HOME", "").strip()
     if env_home:

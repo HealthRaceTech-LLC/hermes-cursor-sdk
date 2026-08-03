@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import secrets
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -17,12 +19,15 @@ from xml.sax.saxutils import escape
 
 from hermes_cursor_sdk import __version__
 from hermes_cursor_sdk.config import (
+    BRIDGE_ENV_ALLOWLIST,
     CONFIG_PATH,
     DEFAULT_BRIDGE_ENV_PATH,
+    ConfigurationError,
     load_settings,
+    parse_bridge_env_file,
     resolve_hermes_home,
 )
-from hermes_cursor_sdk.provider import CursorProfile, resolve_bridge_base_url
+from hermes_cursor_sdk.provider import CursorProfile
 
 PLUGIN_MARKER = ".hermes-cursor-sdk"
 SERVICE_LABEL = "com.hermes.cursor-bridge"
@@ -194,7 +199,7 @@ def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
         profile = CursorProfile()
         print(f"provider_name: {profile.name}")
         print(f"provider_display_name: {profile.display_name}")
-        print(f"provider_base_url: {profile.base_url}")
+        print(f"provider_base_url: http://{settings.bridge_host}:{settings.bridge_port}/v1")
         print(f"provider_env_vars: {', '.join(profile.env_vars)}")
 
     if issues:
@@ -227,12 +232,16 @@ def cmd_setup(
     if not api_key:
         raise CLIError("CURSOR_API_KEY (or HERMES_CURSOR_API_KEY) must be set in the environment")
 
-    hermes_home = resolve_hermes_home(profile=profile)
+    try:
+        hermes_home = resolve_hermes_home(profile=profile)
+    except ConfigurationError as exc:
+        raise CLIError(str(exc)) from exc
     bridge_token = (token or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN") or "").strip()
     if not bridge_token:
         bridge_token = secrets.token_hex(32)
 
-    base_url = resolve_bridge_base_url()
+    settings = load_settings()
+    base_url = f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
     bridge_env_path = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
     bridge_env_path.parent.mkdir(parents=True, exist_ok=True)
     write_bridge_env(
@@ -241,6 +250,8 @@ def cmd_setup(
             "CURSOR_API_KEY": api_key,
             "HERMES_CURSOR_BRIDGE_TOKEN": bridge_token,
             "HERMES_CURSOR_BRIDGE_CWD": str(project),
+            "HERMES_CURSOR_BRIDGE_HOST": settings.bridge_host,
+            "HERMES_CURSOR_BRIDGE_PORT": str(settings.bridge_port),
             "HERMES_CURSOR_BASE_URL": base_url,
         },
     )
@@ -285,7 +296,17 @@ def cmd_setup(
 
 
 def write_bridge_env(path: Path, values: Mapping[str, str]) -> None:
-    lines = [f"{key}={values[key]}" for key in sorted(values)]
+    """Upsert allowlisted keys into bridge.env without dropping unrelated entries."""
+
+    existing: dict[str, str] = {}
+    if path.is_file():
+        existing = parse_bridge_env_file(path)
+    updates = {key: value for key, value in values.items() if key in BRIDGE_ENV_ALLOWLIST}
+    unknown = sorted(set(values) - BRIDGE_ENV_ALLOWLIST)
+    if unknown:
+        raise CLIError(f"refusing to write non-allowlisted bridge env keys: {', '.join(unknown)}")
+    merged = {**existing, **updates}
+    lines = [f"{key}={merged[key]}" for key in sorted(merged)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.chmod(0o600)
 
@@ -485,12 +506,33 @@ def bootstrap_service() -> None:
     domain = f"gui/{os.getuid()}"
     label = SERVICE_LABEL
     # Best-effort unload then bootstrap so re-setup is idempotent.
-    os.system(f"launchctl bootout {domain}/{label} >/dev/null 2>&1")
-    rc = os.system(f"launchctl bootstrap {domain} {path}")
-    if rc != 0:
-        raise CLIError(f"launchctl bootstrap failed with code {rc}")
-    os.system(f"launchctl enable {domain}/{label} >/dev/null 2>&1")
-    os.system(f"launchctl kickstart -k {domain}/{label} >/dev/null 2>&1")
+    subprocess.run(
+        ["launchctl", "bootout", f"{domain}/{label}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    result = subprocess.run(
+        ["launchctl", "bootstrap", domain, str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise CLIError(f"launchctl bootstrap failed with code {result.returncode}: {detail}")
+    subprocess.run(
+        ["launchctl", "enable", f"{domain}/{label}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["launchctl", "kickstart", "-k", f"{domain}/{label}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     print(f"loaded launchd service: {label}")
 
 
@@ -554,12 +596,22 @@ def launchd_plist(log_dir: Path) -> str:
 
 def systemd_unit() -> str:
     env_file = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
+    exec_start = " ".join(
+        shlex.quote(part)
+        for part in (
+            sys.executable,
+            "-m",
+            "hermes_cursor_sdk.bridge",
+            "--env-file",
+            str(env_file),
+        )
+    )
     return f"""[Unit]
 Description=Hermes Cursor SDK bridge
 
 [Service]
 Type=simple
-ExecStart={sys.executable} -m hermes_cursor_sdk.bridge --env-file {env_file}
+ExecStart={exec_start}
 Restart=on-failure
 Environment=PYTHONUNBUFFERED=1
 

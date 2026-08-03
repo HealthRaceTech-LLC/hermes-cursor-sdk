@@ -203,3 +203,24 @@ def test_setup_requires_api_key(
     monkeypatch.delenv("HERMES_CURSOR_API_KEY", raising=False)
 
     assert cli.main(["setup", "--cwd", str(isolated_cli_paths / "project"), "--no-service"]) == 1
+
+
+def test_write_bridge_env_preserves_existing_allowlisted_keys(tmp_path: Path) -> None:
+    path = tmp_path / "bridge.env"
+    path.write_text(
+        "CURSOR_API_KEY=old-key\nHERMES_CURSOR_BRIDGE_CONTEXT_LENGTH=12345\n",
+        encoding="utf-8",
+    )
+
+    cli.write_bridge_env(
+        path,
+        {
+            "CURSOR_API_KEY": "new-key",
+            "HERMES_CURSOR_BRIDGE_TOKEN": "token",
+        },
+    )
+
+    parsed = config.parse_bridge_env_file(path)
+    assert parsed["CURSOR_API_KEY"] == "new-key"
+    assert parsed["HERMES_CURSOR_BRIDGE_TOKEN"] == "token"
+    assert parsed["HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH"] == "12345"
