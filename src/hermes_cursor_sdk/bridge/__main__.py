@@ -1,6 +1,6 @@
-"""Run the bridge stub as a module."""
+"""Module entry point for `python -m hermes_cursor_sdk.bridge`."""
 
-from .server import main
+from hermes_cursor_sdk.bridge.server import main
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
