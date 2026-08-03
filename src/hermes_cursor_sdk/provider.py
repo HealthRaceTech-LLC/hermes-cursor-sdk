@@ -107,18 +107,25 @@ class CursorProfile(ProviderProfile):
 
     def fetch_models(
         self,
-        base_url: str | None = None,
         *,
-        token: str | None = None,
-        timeout: float = 10.0,
-    ) -> list[dict[str, Any]]:
-        """Fetch bridge models through the OpenAI-compatible /models endpoint."""
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch bridge model IDs via OpenAI-compatible ``/models``.
+
+        Matches Hermes ``ProviderProfile.fetch_models`` so
+        ``provider_model_ids()`` can discover the live catalog. Returns
+        ``None`` on auth/network/shape failures so Hermes can fall back to
+        ``fallback_models`` instead of swallowing a TypeError and emptying
+        the picker row.
+        """
         resolved_base_url = (base_url or getenv("HERMES_CURSOR_BASE_URL") or self.base_url).rstrip(
             "/"
         )
-        resolved_token = token or getenv("HERMES_CURSOR_BRIDGE_TOKEN")
-        if not resolved_token:
-            raise RuntimeError("HERMES_CURSOR_BRIDGE_TOKEN is required to fetch Cursor models")
+        resolved_token = api_key or getenv("HERMES_CURSOR_BRIDGE_TOKEN")
+        if not resolved_token or not resolved_base_url:
+            return None
 
         request = Request(
             f"{resolved_base_url}/models",
@@ -131,15 +138,27 @@ class CursorProfile(ProviderProfile):
         try:
             with urlopen(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise RuntimeError(f"Cursor bridge model fetch failed with HTTP {exc.code}") from exc
-        except (OSError, URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Cursor bridge model fetch failed: {exc}") from exc
+        except (HTTPError, OSError, URLError, json.JSONDecodeError):
+            return None
 
         data = payload.get("data") if isinstance(payload, Mapping) else None
         if not isinstance(data, list):
-            raise RuntimeError("Cursor bridge /models response did not include a data array")
-        return [dict(item) for item in data if isinstance(item, Mapping)]
+            return None
+
+        model_ids: list[str] = []
+        seen: set[str] = set()
+        for item in data:
+            if not isinstance(item, Mapping):
+                continue
+            model_id = item.get("id")
+            if not isinstance(model_id, str):
+                continue
+            normalized = model_id.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            model_ids.append(normalized)
+        return model_ids or None
 
     def build_extra_body(self, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Build the OpenAI extra_body cursor extension."""

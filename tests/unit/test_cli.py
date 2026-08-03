@@ -106,9 +106,11 @@ def test_provider_install_and_status(
 ) -> None:
     assert cli.main(["provider", "install"]) == 0
     assert cli.provider_status()["installed"] is True
+    assert cli.hermes_config_provider_status()["configured"] is True
 
     output = capsys.readouterr().out
     assert "installed provider shim" in output
+    assert "providers.cursor" in output
 
 
 def test_read_provider_version_handles_missing_or_bad_marker(tmp_path: Path) -> None:
@@ -196,11 +198,49 @@ def test_setup_writes_env_and_installs_provider(
     assert hermes_env.is_file()
     assert "HERMES_CURSOR_BRIDGE_TOKEN=setup-token" in hermes_env.read_text(encoding="utf-8")
     assert cli.provider_status()["installed"] is True
+    hermes_config = (isolated_cli_paths / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+    assert "hermes-cursor-sdk-managed-provider" in hermes_config
+    assert "cursor:" in hermes_config
+    assert "HERMES_CURSOR_BRIDGE_TOKEN" in hermes_config
     config_text = config_path.read_text(encoding="utf-8")
     assert 'allowed_local_roots = ["/tmp/keep"]' in config_text
     assert "bridge_port = 8787" in config_text
     assert 'bridge_cwd = "' in config_text
     assert "Phase 2 setup complete" in capsys.readouterr().out
+
+
+def test_upsert_hermes_config_provider_preserves_siblings(tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\nproviders:\n  other:\n    api: http://example.test/v1\n",
+        encoding="utf-8",
+    )
+
+    cli.upsert_hermes_config_provider(
+        hermes_home=hermes_home,
+        base_url="http://127.0.0.1:8787/v1",
+    )
+    text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert "model:" in text
+    assert "other:" in text
+    assert "cursor:" in text
+    assert 'api: "http://127.0.0.1:8787/v1"' in text
+
+    cli.upsert_hermes_config_provider(
+        hermes_home=hermes_home,
+        base_url="http://127.0.0.1:9999/v1",
+    )
+    text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert text.count("cursor:") == 1
+    assert 'api: "http://127.0.0.1:9999/v1"' in text
+    assert "other:" in text
+
+    assert cli.remove_hermes_config_provider(hermes_home=hermes_home) is not None
+    text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert "cursor:" not in text
+    assert "other:" in text
+    assert "model:" in text
 
 
 def test_setup_requires_api_key(

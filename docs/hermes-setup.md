@@ -62,7 +62,10 @@ Then:
 5. `hermes-cursor doctor --provider-mode`
 6. Confirm `hermes doctor` can probe the bridge `/models` endpoint
 
-The provider shim is installed under `$HERMES_HOME/plugins/model-providers/cursor/` (for profile `co-cto`, that is `~/.hermes/profiles/co-cto/plugins/model-providers/cursor/`). It is discovered by Hermes' model-provider scanner — **do not** add `cursor-provider` to `plugins.enabled`.
+`setup` / `provider install` write **two** things into the profile home:
+
+1. Plugin shim: `$HERMES_HOME/plugins/model-providers/cursor/` (for profile `co-cto`, `~/.hermes/profiles/co-cto/plugins/model-providers/cursor/`). Discovered by Hermes' model-provider scanner — **do not** add `cursor-provider` to `plugins.enabled`.
+2. Config entry: `$HERMES_HOME/config.yaml` → `providers.cursor` with `api` + `key_env`. **Required for Desktop/CLI model switch** — Hermes' picker can list plugin providers, but `resolve_provider_full` (model switch) only accepts models.dev / overlays / `config.yaml` `providers:`. Without this entry you get `Unknown provider 'cursor'`.
 
 ## Config files (optional)
 
