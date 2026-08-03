@@ -185,7 +185,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._dispatch(self._handle_post)
 
-    def log_message(self, _format: str, *_args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         return
 
     def _dispatch(self, handler: Callable[[], int]) -> None:
@@ -739,7 +739,7 @@ def serve_http(
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, request_shutdown)
 
-    host, port = httpd.server_address
+    host, port = httpd.server_address[:2]
     log_event("bridge_started", host=host, port=port, expose=settings.bridge_expose)
     try:
         httpd.serve_forever()

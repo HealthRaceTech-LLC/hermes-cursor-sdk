@@ -9,11 +9,16 @@ from typing import Any, Literal
 
 from hermes_cursor_sdk.errors import InvalidArgsError
 
+ModelParameterValue: Any = None
+ModelSelection: Any = None
 try:  # pragma: no cover - depends on optional SDK runtime
-    from cursor_sdk import ModelParameterValue, ModelSelection
+    from cursor_sdk import ModelParameterValue as _SDKModelParameterValue
+    from cursor_sdk import ModelSelection as _SDKModelSelection
 except ImportError:  # pragma: no cover - tests use dict fallback
-    ModelParameterValue = None  # type: ignore[assignment]
-    ModelSelection = None  # type: ignore[assignment]
+    pass
+else:
+    ModelParameterValue = _SDKModelParameterValue
+    ModelSelection = _SDKModelSelection
 
 
 @dataclass(frozen=True)
@@ -169,7 +174,7 @@ def _parameter_value(value: Any) -> Any:
 
 
 def _model_selection(model_id: str, params: Mapping[str, Any]) -> Any:
-    serialized = {"id": model_id}
+    serialized: dict[str, Any] = {"id": model_id}
     if params:
         serialized["params"] = {key: _parameter_value(value) for key, value in params.items()}
     if ModelSelection is None:

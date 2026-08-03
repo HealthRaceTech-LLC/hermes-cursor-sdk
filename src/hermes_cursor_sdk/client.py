@@ -7,7 +7,7 @@ import inspect
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from hermes_cursor_sdk.config import Settings, load_settings, require_api_key
 from hermes_cursor_sdk.errors import (
@@ -27,7 +27,7 @@ from hermes_cursor_sdk.models import (
     normalize_repository,
     resolve_model_selection,
 )
-from hermes_cursor_sdk.results import error_result, extract_assistant_text, ok_result
+from hermes_cursor_sdk.results import ResultDict, error_result, extract_assistant_text, ok_result
 from hermes_cursor_sdk.store import StateStore
 
 TERMINAL_STATUSES = {
@@ -170,7 +170,7 @@ class CursorSDKClient:
         cwd: str | Path,
         model: Any = None,
         params: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         try:
             api_key = require_api_key(self.settings)
             cwd_path = self._validate_cwd(cwd)
@@ -199,12 +199,12 @@ class CursorSDKClient:
         idempotency_key: str | None = None,
         wait: bool = False,
         env_names: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         try:
             if idempotency_key:
                 existing = self.store.get_idempotency(f"create:{idempotency_key}")
                 if existing and existing.get("payload"):
-                    return existing["payload"]
+                    return cast(ResultDict, existing["payload"])
             api_key = require_api_key(self.settings)
             self._validate_env_names(env_names)
             cloud_repos = self._validate_cloud_repos(repos)
@@ -299,7 +299,7 @@ class CursorSDKClient:
         wait: bool = True,
         force: bool = False,
         close: bool = False,
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         try:
             resolved_agent_id = agent_id
             if not resolved_agent_id and session_key:
@@ -327,7 +327,7 @@ class CursorSDKClient:
         except Exception as exc:
             return error_result(map_exception(exc), agent_id=agent_id)
 
-    def status(self, *, agent_id: str, run_id: str | None = None) -> dict[str, Any]:
+    def status(self, *, agent_id: str, run_id: str | None = None) -> ResultDict:
         try:
             runtime = self._runtime(agent_id)
             api_key = require_api_key(self.settings)
@@ -354,7 +354,7 @@ class CursorSDKClient:
         force: bool = False,
         model: Any = None,
         params: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         try:
             return self._resume_and_send(
                 agent_id=agent_id,
@@ -368,7 +368,7 @@ class CursorSDKClient:
         except Exception as exc:
             return error_result(map_exception(exc), agent_id=agent_id)
 
-    def cancel(self, *, agent_id: str, run_id: str | None = None) -> dict[str, Any]:
+    def cancel(self, *, agent_id: str, run_id: str | None = None) -> ResultDict:
         try:
             runtime = self._runtime(agent_id)
             api_key = require_api_key(self.settings)
@@ -395,7 +395,7 @@ class CursorSDKClient:
         agent_id: str | None = None,
         runtime: str | None = None,
         confirm_agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         try:
             api_key = require_api_key(self.settings)
             action = action.lower()
@@ -434,20 +434,14 @@ class CursorSDKClient:
         model: Any,
         params: Mapping[str, Any] | None,
         wait: bool,
-    ) -> dict[str, Any]:
-        stored = self.store.get_agent(agent_id)
-        runtime = str(stored.get("runtime") if stored else self._runtime(agent_id))
+    ) -> ResultDict:
+        stored = self.store.get_agent(agent_id) or {}
+        runtime = str(stored.get("runtime") or self._runtime(agent_id))
         if not force and self._is_busy(agent_id):
             raise BusyError("Agent has an active run")
         api_key = require_api_key(self.settings)
         cwd_path = self._validate_cwd(cwd or stored.get("cwd")) if runtime == "local" else None
-        model_selection = (
-            self._resolve_model(model, params)
-            if model or params
-            else stored.get("model")
-            if stored
-            else None
-        )
+        model_selection = self._resolve_model(model, params) if model or params else stored.get("model")
         with (
             self._launch_bridge(cwd_path, api_key)
             if runtime == "local"
@@ -679,7 +673,7 @@ class CursorSDKClient:
 
     def _result_from_run(
         self, run: Any, *, runtime: str, model: Any = None, agent_id: str | None = None
-    ) -> dict[str, Any]:
+    ) -> ResultDict:
         agent_id = agent_id or self._agent_id(run)
         run_id = self._run_id(run)
         status = self._status(run) or "finished"

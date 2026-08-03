@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -196,8 +197,8 @@ def _toml_settings(path: Path | None = None) -> dict[str, Any]:
     return data
 
 
-def _env_settings(env: dict[str, str] | None = None) -> dict[str, Any]:
-    env = env or os.environ
+def _env_settings(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    resolved_env = env if env is not None else os.environ
     mapping = {
         "HERMES_CURSOR_API_KEY": "api_key",
         "CURSOR_API_KEY": "api_key",
@@ -231,12 +232,12 @@ def _env_settings(env: dict[str, str] | None = None) -> dict[str, Any]:
     }
     result: dict[str, Any] = {}
     for env_name, setting_name in mapping.items():
-        if env_name in env and env[env_name] != "":
-            result[setting_name] = env[env_name]
+        if env_name in resolved_env and resolved_env[env_name] != "":
+            result[setting_name] = resolved_env[env_name]
     return result
 
 
-def load_settings(path: str | Path | None = None, *, env: dict[str, str] | None = None) -> Settings:
+def load_settings(path: str | Path | None = None, *, env: Mapping[str, str] | None = None) -> Settings:
     """Load settings from TOML, then overlay environment variables."""
 
     data = _toml_settings()

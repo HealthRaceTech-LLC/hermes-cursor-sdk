@@ -7,10 +7,13 @@ import re
 import socket
 from typing import Any
 
+_cursor_sdk: Any | None
 try:  # pragma: no cover - exercised only when the real SDK is installed
-    import cursor_sdk as _cursor_sdk
+    import cursor_sdk as _imported_cursor_sdk
 except ImportError:  # pragma: no cover - tests use the stubs below
     _cursor_sdk = None
+else:
+    _cursor_sdk = _imported_cursor_sdk
 
 
 class _StubCursorSDKError(Exception):

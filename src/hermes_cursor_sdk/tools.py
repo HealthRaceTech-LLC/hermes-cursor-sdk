@@ -6,58 +6,17 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
 from os import getenv
-from typing import Any
+from typing import Any, cast
 
+from hermes_cursor_sdk.client import CursorSDKClient
+from hermes_cursor_sdk.config import Settings, load_settings
+from hermes_cursor_sdk.errors import map_exception
+from hermes_cursor_sdk.results import ResultDict, error_result, ok_result
 from hermes_cursor_sdk.schemas import TOOL_SCHEMAS
 
-try:
-    from hermes_cursor_sdk.client import CursorSDKClient
-except ImportError:  # pragma: no cover - parallel shared library rewrite window
-    CursorSDKClient = None  # type: ignore[assignment]
-
-try:
-    from hermes_cursor_sdk.config import Settings, load_settings
-except ImportError:  # pragma: no cover - parallel shared library rewrite window
-    Settings = Any  # type: ignore[misc, assignment]
-
-    def load_settings() -> Any:
-        try:
-            from hermes_cursor_sdk.config import CursorConfig
-        except ImportError:
-            return None
-        return CursorConfig.from_env()
-
-
-try:
-    from hermes_cursor_sdk.errors import map_exception
-except ImportError:  # pragma: no cover - parallel shared library rewrite window
-
-    def map_exception(exc: Exception) -> dict[str, Any]:
-        return {"code": exc.__class__.__name__, "message": str(exc)}
-
-
-try:
-    from hermes_cursor_sdk.results import error_result, ok_result
-except ImportError:  # pragma: no cover - parallel shared library rewrite window
-
-    def ok_result(data: Any = None) -> dict[str, Any]:
-        return {"ok": True, "data": data}
-
-    def error_result(
-        code: str,
-        message: str,
-        details: Any | None = None,
-    ) -> dict[str, Any]:
-        error: dict[str, Any] = {"code": code, "message": message}
-        if details is not None:
-            error["details"] = details
-        return {"ok": False, "error": error}
-
-
 Handler = Callable[[dict[str, Any]], str]
-ResultDict = dict[str, Any]
 
-_CLIENT: Any | None = None
+_CLIENT: CursorSDKClient | None = None
 _AGENT_ACTIONS = {"list", "get", "usage", "list_artifacts", "archive", "unarchive", "delete"}
 _AGENT_ID_ACTIONS = {"get", "list_artifacts", "archive", "unarchive", "delete"}
 _RUNTIMES = {"local", "cloud"}
@@ -85,20 +44,21 @@ def cursor_api_key_available() -> bool:
     return bool(api_key or getenv("CURSOR_API_KEY"))
 
 
-def _client() -> Any:
+def _client() -> CursorSDKClient:
     """Lazily construct the planned shared Cursor SDK client."""
     global _CLIENT
 
     if _CLIENT is not None:
         return _CLIENT
-    if CursorSDKClient is None:
+    client_class = CursorSDKClient
+    if client_class is None:
         raise RuntimeError("CursorSDKClient is not available")
 
     settings: Settings = load_settings()
     try:
-        _CLIENT = CursorSDKClient(settings=settings)
+        _CLIENT = client_class(settings=settings)
     except TypeError:
-        _CLIENT = CursorSDKClient(settings)
+        _CLIENT = client_class(settings)
     return _CLIENT
 
 
@@ -114,29 +74,31 @@ def _json(result: Any) -> str:
 
 
 def _ok(value: Any) -> ResultDict:
-    if isinstance(value, dict) and ("ok" in value or "error" in value):
-        return value
-    try:
-        return ok_result(value)
-    except TypeError:
-        if isinstance(value, str):
-            return ok_result(result_text=value)
-        return ok_result(metadata={"data": value})
+    if isinstance(value, dict) and "ok" in value:
+        return cast(ResultDict, value)
+    if isinstance(value, str):
+        return ok_result(result_text=value)
+    return ok_result(metadata={"data": value})
 
 
 def _error(code: str, message: str, details: Any | None = None) -> ResultDict:
-    error = {"code": code, "message": message}
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "retryable": False,
+        "retry_after": None,
+        "request_id": None,
+        "status_code": None,
+        "help_url": None,
+    }
+    metadata: dict[str, Any] | None = None
     if details is not None:
-        error["details"] = details
+        metadata = {"details": details}
     try:
-        return error_result(error)
+        return error_result(error, metadata=metadata)
     except TypeError:
-        try:
-            return error_result(code=code, message=message, details=details)
-        except TypeError:
-            if details is None:
-                return error_result(code, message)
-            return error_result(code, message, details)
+        legacy_error_result = cast(Any, error_result)
+        return cast(ResultDict, legacy_error_result(code=code, message=message, details=details))
 
 
 def _exception_error(exc: Exception) -> ResultDict:
@@ -203,11 +165,14 @@ def _optional_str_list(args: Mapping[str, Any], name: str) -> list[str] | None:
     if name not in args:
         return None
     value = args[name]
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item.strip() for item in value
-    ):
+    if not isinstance(value, list):
         raise _InvalidArgs(f"{name} must be a list of non-empty strings.", {"field": name})
-    return list(value)
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise _InvalidArgs(f"{name} must be a list of non-empty strings.", {"field": name})
+        result.append(item)
+    return result
 
 
 def _optional_enum(args: Mapping[str, Any], name: str, allowed: set[str]) -> str | None:

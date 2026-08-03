@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Mapping
 from os import getenv
@@ -12,12 +13,13 @@ from urllib.request import Request, urlopen
 from hermes_cursor_sdk.client import CursorClient
 from hermes_cursor_sdk.config import CursorConfig
 
+ProviderProfile: Any
+_register_provider: Any
 try:  # pragma: no cover - depends on Hermes runtime.
-    from providers.base import ProviderProfile
-    from providers.base import register_provider as _register_provider
+    _providers_base = importlib.import_module("providers.base")
 except ImportError:  # pragma: no cover - exercised in tests without Hermes.
 
-    class ProviderProfile:  # type: ignore[no-redef]
+    class ProviderProfile:
         """Small fallback base that mirrors Hermes profile attribute storage."""
 
         def __init__(self, **kwargs: Any) -> None:
@@ -26,9 +28,13 @@ except ImportError:  # pragma: no cover - exercised in tests without Hermes.
 
     _REGISTERED_PROVIDERS: dict[str, ProviderProfile] = {}
 
-    def _register_provider(profile: ProviderProfile) -> ProviderProfile:
+    def _register_provider(*args: Any) -> ProviderProfile:
+        profile = args[-1]
         _REGISTERED_PROVIDERS[getattr(profile, "name", "cursor")] = profile
         return profile
+else:
+    ProviderProfile = _providers_base.ProviderProfile
+    _register_provider = _providers_base.register_provider
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8787/v1"
@@ -136,7 +142,7 @@ def register_cursor_provider() -> Any:
     try:
         return _register_provider(profile)
     except TypeError:
-        return _register_provider("cursor", profile)  # type: ignore[misc]
+        return _register_provider("cursor", profile)
 
 
 class CursorChatProvider:
