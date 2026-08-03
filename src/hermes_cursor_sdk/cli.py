@@ -273,8 +273,7 @@ def cmd_setup(
     print(f"hermes_home: {hermes_home}")
     print(f"provider: {plugin_dir(profile=profile)}")
     print(
-        "Next: restart Hermes Desktop / gateway, then pick "
-        "Cursor (SDK bridge) in the model picker."
+        "Next: restart Hermes Desktop / gateway, then pick Cursor (SDK bridge) in the model picker."
     )
     print("Run: hermes-cursor doctor --provider-mode")
     return 0

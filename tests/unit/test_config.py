@@ -262,9 +262,10 @@ def test_resolve_hermes_home_prefers_env_then_active_profile(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "explicit"))
     assert config.resolve_hermes_home() == (tmp_path / "explicit").resolve()
-    assert config.resolve_hermes_home(profile="other") == (
-        tmp_path / ".hermes" / "profiles" / "other"
-    ).resolve()
+    assert (
+        config.resolve_hermes_home(profile="other")
+        == (tmp_path / ".hermes" / "profiles" / "other").resolve()
+    )
 
 
 def test_load_settings_auto_loads_default_bridge_env(
