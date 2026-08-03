@@ -45,11 +45,24 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8787/v1"
 DEFAULT_FALLBACK_MODELS = ("composer-2.5",)
 
 
+def resolve_bridge_base_url() -> str:
+    """Resolve the OpenAI-compatible bridge base URL from env or defaults."""
+
+    explicit = getenv("HERMES_CURSOR_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    port = getenv("HERMES_CURSOR_BRIDGE_PORT") or "8787"
+    host = getenv("HERMES_CURSOR_BRIDGE_HOST") or "127.0.0.1"
+    return f"http://{host}:{port}/v1"
+
+
 class CursorProfile(ProviderProfile):
     """Provider profile consumed by Hermes model-provider mode."""
 
     name = "cursor"
     aliases = ("cursor-sdk", "cursor-bridge", "hermes-cursor")
+    display_name = "Cursor (SDK bridge)"
+    description = "Unofficial Cursor SDK via local OpenAI-compatible bridge"
     env_vars = ("HERMES_CURSOR_BRIDGE_TOKEN", "HERMES_CURSOR_BASE_URL")
     base_url = DEFAULT_BASE_URL
     auth_type = "api_key"
@@ -63,8 +76,10 @@ class CursorProfile(ProviderProfile):
         values = {
             "name": self.name,
             "aliases": self.aliases,
+            "display_name": self.display_name,
+            "description": self.description,
             "env_vars": self.env_vars,
-            "base_url": self.base_url,
+            "base_url": overrides.get("base_url") or resolve_bridge_base_url(),
             "auth_type": self.auth_type,
             "api_mode": self.api_mode,
             "supports_health_check": self.supports_health_check,
@@ -144,8 +159,10 @@ def register_cursor_provider() -> Any:
     profile = CursorProfile(
         name="cursor",
         aliases=("cursor-sdk", "cursor-bridge", "hermes-cursor"),
+        display_name="Cursor (SDK bridge)",
+        description="Unofficial Cursor SDK via local OpenAI-compatible bridge",
         env_vars=("HERMES_CURSOR_BRIDGE_TOKEN", "HERMES_CURSOR_BASE_URL"),
-        base_url=DEFAULT_BASE_URL,
+        base_url=resolve_bridge_base_url(),
         auth_type="api_key",
         api_mode="chat_completions",
         supports_health_check=True,

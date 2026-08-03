@@ -46,25 +46,23 @@ Smoke from chat (with the toolset enabled):
 
 ## Phase 2 — chat provider (optional)
 
-```bash
-export HERMES_CURSOR_BRIDGE_TOKEN="$(openssl rand -hex 32)"
-export HERMES_CURSOR_BRIDGE_CWD="/absolute/path/to/project"
-# optional: HERMES_CURSOR_BASE_URL=http://127.0.0.1:8787/v1
+Required for Cursor to appear in Hermes Desktop’s model/provider picker.
 
-hermes-cursor-bridge &   # or: hermes-cursor bridge
-hermes-cursor provider install
+```bash
+# Installs into the active profile home (or pass --profile)
+hermes-cursor setup --cwd /absolute/path/to/project --load-service
 ```
 
 Then:
 
-1. Restart Hermes / gateway
-2. `hermes model` → select provider **Cursor (SDK bridge)** and a model from `/v1/models`
+1. Restart Hermes Desktop / gateway
+2. `hermes model` (or Desktop Settings → Providers) → **Cursor (SDK bridge)** + a model from `/v1/models`
 3. Disable Hermes toolsets that would nest file/terminal actions under Cursor
 4. Pin every Hermes auxiliary slot (compression, vision, memory, etc.) to a normal provider — not Cursor
 5. `hermes-cursor doctor --provider-mode`
 6. Confirm `hermes doctor` can probe the bridge `/models` endpoint
 
-The provider shim is installed under `~/.hermes/plugins/model-providers/cursor/`. It is discovered by Hermes' model-provider scanner — **do not** add `cursor-provider` to `plugins.enabled`.
+The provider shim is installed under `$HERMES_HOME/plugins/model-providers/cursor/` (for profile `co-cto`, that is `~/.hermes/profiles/co-cto/plugins/model-providers/cursor/`). It is discovered by Hermes' model-provider scanner — **do not** add `cursor-provider` to `plugins.enabled`.
 
 ## Config files (optional)
 

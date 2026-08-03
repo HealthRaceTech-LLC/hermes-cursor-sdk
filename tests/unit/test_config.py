@@ -246,3 +246,44 @@ def test_settings_is_frozen() -> None:
 
     with pytest.raises(FrozenInstanceError):
         settings.api_key = "other"  # type: ignore[misc]
+
+
+def test_resolve_hermes_home_prefers_env_then_active_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
+    profile = root / "profiles" / "co-cto"
+    (root / "active_profile").write_text("co-cto\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    # Profile directory need not exist yet — Desktop still uses that HERMES_HOME.
+    assert config.resolve_hermes_home() == profile.resolve()
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "explicit"))
+    assert config.resolve_hermes_home() == (tmp_path / "explicit").resolve()
+    assert (
+        config.resolve_hermes_home(profile="other")
+        == (tmp_path / ".hermes" / "profiles" / "other").resolve()
+    )
+    with pytest.raises(config.ConfigurationError, match="path separators"):
+        config.resolve_hermes_home(profile="../escape")
+
+
+def test_load_settings_auto_loads_default_bridge_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge_env = tmp_path / "bridge.env"
+    bridge_env.write_text(
+        "CURSOR_API_KEY=from-file\nHERMES_CURSOR_BRIDGE_TOKEN=token-from-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "missing.toml")
+    monkeypatch.setattr(config, "DEFAULT_BRIDGE_ENV_PATH", bridge_env)
+
+    settings = load_settings(env={})
+
+    assert settings.api_key == "from-file"
+    assert settings.bridge_token == "token-from-file"
+    assert settings.bridge_env_file == bridge_env.resolve()

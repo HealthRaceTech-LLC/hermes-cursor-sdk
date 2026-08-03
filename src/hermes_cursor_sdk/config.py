@@ -15,18 +15,24 @@ from hermes_cursor_sdk.errors import AuthMissingError, ConfigurationError
 
 CONFIG_PATH = Path("~/.hermes/cursor-sdk/config.toml").expanduser()
 DEFAULT_STORE_DIR = Path("~/.hermes/cache/cursor-sdk/").expanduser()
+DEFAULT_BRIDGE_ENV_PATH = Path("~/.hermes/cursor-sdk/bridge.env").expanduser()
 
 BRIDGE_ENV_ALLOWLIST = {
     "CURSOR_API_KEY",
     "CURSOR_BASE_URL",
     "HERMES_CURSOR_API_KEY",
+    "HERMES_CURSOR_BASE_URL",
     "HERMES_CURSOR_BRIDGE_TOKEN",
+    "HERMES_CURSOR_BRIDGE_HOST",
+    "HERMES_CURSOR_BRIDGE_PORT",
+    "HERMES_CURSOR_BRIDGE_CWD",
     "HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH",
     "HERMES_CURSOR_BRIDGE_MAX_COMPLETION_TOKENS",
     "HERMES_CURSOR_BRIDGE_MAX_OUTPUT_TOKENS",
     "HERMES_CURSOR_BRIDGE_REQUEST_SIZE_LIMIT",
     "HERMES_CURSOR_BRIDGE_MAX_SESSIONS",
     "HERMES_CURSOR_BRIDGE_IDLE_TIMEOUT_SECONDS",
+    "HERMES_CURSOR_BRIDGE_EXPOSE",
     "HERMES_CURSOR_MCP_CONFIG",
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -241,16 +247,75 @@ def _env_settings(env: Mapping[str, str] | None = None) -> dict[str, Any]:
 def load_settings(
     path: str | Path | None = None, *, env: Mapping[str, str] | None = None
 ) -> Settings:
-    """Load settings from TOML, then overlay bridge.env and process env."""
+    """Load settings from TOML, then overlay bridge.env and process env.
+
+    When ``bridge_env_file`` is unset, automatically loads
+    ``~/.hermes/cursor-sdk/bridge.env`` if that file exists.
+    """
 
     data = _toml_settings(Path(path) if path is not None else None)
     env_data = _env_settings(env)
     settings = _coerce_settings({**data, **env_data})
     data = dict(data)
-    if settings.bridge_env_file is not None:
-        data.update(_env_settings(parse_bridge_env_file(settings.bridge_env_file)))
+    bridge_env_path = settings.bridge_env_file
+    if bridge_env_path is None:
+        default_bridge_env = DEFAULT_BRIDGE_ENV_PATH.expanduser()
+        if default_bridge_env.is_file():
+            bridge_env_path = default_bridge_env.resolve()
+    if bridge_env_path is not None:
+        data.update(_env_settings(parse_bridge_env_file(bridge_env_path)))
+        data["bridge_env_file"] = bridge_env_path
     data.update(env_data)
     return _coerce_settings(data)
+
+
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def resolve_hermes_home(*, profile: str | None = None) -> Path:
+    """Resolve the active Hermes home directory for provider-shim installs.
+
+    Preference order:
+    1. Explicit ``profile`` name → ``~/.hermes/profiles/<profile>``
+    2. ``HERMES_HOME`` environment variable
+    3. ``~/.hermes/active_profile`` when set to a non-default profile
+    4. ``~/.hermes``
+    """
+
+    if profile:
+        name = profile.strip()
+        if not name:
+            raise ConfigurationError("profile name must not be empty")
+        if not _PROFILE_NAME_RE.fullmatch(name):
+            raise ConfigurationError(
+                "profile name must be alphanumeric (plus _/-), without path separators"
+            )
+        root = (Path.home() / ".hermes" / "profiles").expanduser().resolve()
+        candidate = (root / name).resolve()
+        if not candidate.is_relative_to(root):
+            raise ConfigurationError("profile name escapes the profiles directory")
+        return candidate
+
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        return Path(env_home).expanduser().resolve()
+
+    root = (Path.home() / ".hermes").expanduser().resolve()
+    active_path = root / "active_profile"
+    if active_path.is_file():
+        active = active_path.read_text(encoding="utf-8").strip()
+        if active and active != "default":
+            if not _PROFILE_NAME_RE.fullmatch(active):
+                # Corrupt sticky profile should not crash status/doctor; fall back.
+                return root
+            profiles_root = (root / "profiles").resolve()
+            candidate = (profiles_root / active).resolve()
+            if not candidate.is_relative_to(profiles_root):
+                return root
+            # Return the profile path even before the directory exists so setup
+            # installs into the home Desktop/gateway will actually scan.
+            return candidate
+    return root
 
 
 def parse_bridge_env_file(path: str | Path) -> dict[str, str]:

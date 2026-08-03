@@ -110,3 +110,13 @@ def test_register_cursor_provider_returns_cursor_profile() -> None:
 
     assert registered.name == "cursor"
     assert "cursor-sdk" in registered.aliases
+    assert registered.display_name == "Cursor (SDK bridge)"
+
+
+def test_resolve_bridge_base_url_respects_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HERMES_CURSOR_BASE_URL", raising=False)
+    monkeypatch.setenv("HERMES_CURSOR_BRIDGE_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_CURSOR_BRIDGE_PORT", "9999")
+
+    assert provider.resolve_bridge_base_url() == "http://127.0.0.1:9999/v1"
+    assert CursorProfile().base_url == "http://127.0.0.1:9999/v1"
