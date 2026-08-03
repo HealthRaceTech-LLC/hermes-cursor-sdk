@@ -387,9 +387,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         lines: list[bytes] = []
         first_content = True
-        usage_source: Any = response
+        # Prefer the latest chunk that carries usage — earlier chunks may have
+        # token counts even when the final content chunk does not.
+        usage = openai_usage_from_response(response)
         for chunk in chunks:
-            usage_source = chunk
+            chunk_usage = openai_usage_from_response(chunk)
+            if chunk_usage is not None:
+                usage = chunk_usage
             text = extract_text(chunk)
             if not text:
                 continue
@@ -417,9 +421,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         # Hermes streams with stream_options.include_usage=true and scrapes a
         # trailing empty-choices chunk for context-meter prompt_tokens.
-        usage = openai_usage_from_response(usage_source)
-        if usage is None and not is_stream_response(response):
-            usage = openai_usage_from_response(response)
         if usage is not None:
             usage_event = {
                 "id": completion_id,

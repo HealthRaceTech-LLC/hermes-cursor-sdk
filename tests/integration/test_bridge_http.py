@@ -34,10 +34,12 @@ class BridgeFakeClient:
     def chat_completions(self, **kwargs: Any) -> Any:
         self.calls.append(("chat_completions", kwargs))
         if kwargs.get("stream"):
+            # Usage on an earlier chunk (not the last) — Hermes meters still need
+            # a trailing SSE usage event.
             return iter(
                 [
-                    {"result_text": "hello "},
-                    {"result_text": "world", "usage": dict(SEEDED_USAGE)},
+                    {"result_text": "hello ", "usage": dict(SEEDED_USAGE)},
+                    {"result_text": "world"},
                 ]
             )
         return {"ok": True, "result_text": "hello world", "usage": dict(SEEDED_USAGE)}
