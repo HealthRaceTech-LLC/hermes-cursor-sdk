@@ -692,7 +692,7 @@ def remove_hermes_config_provider(*, hermes_home: Path) -> Path | None:
     if count == 0:
         return None
 
-    header, _, body = new_section.partition("\n")
+    _, _, body = new_section.partition("\n")
     if _providers_body_has_other_entries(body):
         replacement = new_section if new_section.endswith("\n") else new_section + "\n"
     else:
@@ -782,9 +782,7 @@ def uninstall_provider(*, profile: str | None = None) -> None:
     else:
         print(f"provider shim not installed: {destination}")
 
-    config_path = remove_hermes_config_provider(
-        hermes_home=resolve_hermes_home(profile=profile)
-    )
+    config_path = remove_hermes_config_provider(hermes_home=resolve_hermes_home(profile=profile))
     if config_path is not None:
         print(f"removed Hermes config providers.cursor: {config_path}")
 

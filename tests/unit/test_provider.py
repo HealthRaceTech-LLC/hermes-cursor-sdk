@@ -75,9 +75,7 @@ def test_fetch_models_with_urllib_mock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_models_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HERMES_CURSOR_BRIDGE_TOKEN", raising=False)
 
-    assert (
-        CursorProfile().fetch_models(api_key=None, base_url="http://bridge.test/v1") is None
-    )
+    assert CursorProfile().fetch_models(api_key=None, base_url="http://bridge.test/v1") is None
 
 
 def test_fetch_models_rejects_bad_payload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,9 +83,7 @@ def test_fetch_models_rejects_bad_payload(monkeypatch: pytest.MonkeyPatch) -> No
         provider, "urlopen", lambda *_args, **_kwargs: FakeResponse({"data": "bad"})
     )
 
-    assert (
-        CursorProfile().fetch_models(api_key="token", base_url="http://bridge.test/v1") is None
-    )
+    assert CursorProfile().fetch_models(api_key="token", base_url="http://bridge.test/v1") is None
 
 
 @pytest.mark.parametrize(
