@@ -1,1 +1,1 @@
-"""Bridge package for hermes-cursor-sdk."""
+"""Bridge service package for Hermes Cursor SDK."""
