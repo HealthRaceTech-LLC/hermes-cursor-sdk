@@ -252,12 +252,13 @@ def test_resolve_hermes_home_prefers_env_then_active_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
     profile = root / "profiles" / "co-cto"
-    profile.mkdir(parents=True)
     (root / "active_profile").write_text("co-cto\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_HOME", raising=False)
 
+    # Profile directory need not exist yet — Desktop still uses that HERMES_HOME.
     assert config.resolve_hermes_home() == profile.resolve()
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "explicit"))

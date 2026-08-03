@@ -305,9 +305,15 @@ def resolve_hermes_home(*, profile: str | None = None) -> Path:
     if active_path.is_file():
         active = active_path.read_text(encoding="utf-8").strip()
         if active and active != "default":
-            candidate = root / "profiles" / active
-            if candidate.is_dir():
-                return candidate.resolve()
+            if not _PROFILE_NAME_RE.fullmatch(active):
+                raise ConfigurationError(f"active_profile {active!r} is not a valid profile name")
+            profiles_root = (root / "profiles").resolve()
+            candidate = (profiles_root / active).resolve()
+            if not candidate.is_relative_to(profiles_root):
+                raise ConfigurationError("active_profile escapes the profiles directory")
+            # Return the profile path even before the directory exists so setup
+            # installs into the home Desktop/gateway will actually scan.
+            return candidate
     return root
 
 

@@ -226,23 +226,43 @@ def cmd_setup(
     if not project.is_dir():
         raise CLIError(f"--cwd must be an existing directory: {project}")
 
-    api_key = (
-        os.environ.get("HERMES_CURSOR_API_KEY") or os.environ.get("CURSOR_API_KEY") or ""
-    ).strip()
-    if not api_key:
-        raise CLIError("CURSOR_API_KEY (or HERMES_CURSOR_API_KEY) must be set in the environment")
-
     try:
         hermes_home = resolve_hermes_home(profile=profile)
     except ConfigurationError as exc:
         raise CLIError(str(exc)) from exc
-    bridge_token = (token or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN") or "").strip()
+
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    bridge_env_path = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
+    existing_bridge = parse_bridge_env_file(bridge_env_path) if bridge_env_path.is_file() else {}
+    existing_hermes = read_env_file(hermes_home / ".env")
+
+    api_key = (
+        os.environ.get("HERMES_CURSOR_API_KEY")
+        or os.environ.get("CURSOR_API_KEY")
+        or existing_bridge.get("HERMES_CURSOR_API_KEY")
+        or existing_bridge.get("CURSOR_API_KEY")
+        or existing_hermes.get("HERMES_CURSOR_API_KEY")
+        or existing_hermes.get("CURSOR_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise CLIError(
+            "CURSOR_API_KEY (or HERMES_CURSOR_API_KEY) must be set in the environment, "
+            "bridge.env, or the Hermes profile .env"
+        )
+
+    bridge_token = (
+        token
+        or os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or existing_bridge.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or existing_hermes.get("HERMES_CURSOR_BRIDGE_TOKEN")
+        or ""
+    ).strip()
     if not bridge_token:
         bridge_token = secrets.token_hex(32)
 
     settings = load_settings()
     base_url = f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
-    bridge_env_path = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
     bridge_env_path.parent.mkdir(parents=True, exist_ok=True)
     write_bridge_env(
         bridge_env_path,
@@ -265,8 +285,10 @@ def cmd_setup(
             "HERMES_CURSOR_BRIDGE_TOKEN": bridge_token,
             "HERMES_CURSOR_BASE_URL": base_url,
             "HERMES_CURSOR_BRIDGE_CWD": str(project),
-            "HERMES_CURSOR_DEFAULT_MODEL": os.environ.get(
-                "HERMES_CURSOR_DEFAULT_MODEL", "composer-2.5"
+            "HERMES_CURSOR_DEFAULT_MODEL": (
+                os.environ.get("HERMES_CURSOR_DEFAULT_MODEL")
+                or existing_hermes.get("HERMES_CURSOR_DEFAULT_MODEL")
+                or "composer-2.5"
             ),
         },
     )
@@ -293,6 +315,34 @@ def cmd_setup(
     )
     print("Run: hermes-cursor doctor --provider-mode")
     return 0
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """Best-effort KEY=VALUE reader for Hermes .env files (no shell expansion)."""
+
+    if not path.is_file():
+        return {}
+    result: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        if key.strip():
+            result[key.strip()] = value
+    return result
+
+
+def toml_string(value: str) -> str:
+    """Render a TOML basic string with escapes safe on Windows paths."""
+
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
 
 
 def write_bridge_env(path: Path, values: Mapping[str, str]) -> None:
@@ -343,7 +393,7 @@ def write_config_toml(*, bridge_cwd: Path, bridge_env_file: Path) -> None:
     }
     if not path.is_file():
         path.write_text(
-            "\n".join(f'{key} = "{value}"' for key, value in updates.items()) + "\n",
+            "\n".join(f"{key} = {toml_string(value)}" for key, value in updates.items()) + "\n",
             encoding="utf-8",
         )
         return
@@ -357,14 +407,14 @@ def write_config_toml(*, bridge_cwd: Path, bridge_env_file: Path) -> None:
         if stripped and not stripped.startswith("#") and "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
             if key in updates:
-                out.append(f'{key} = "{updates[key]}"')
+                out.append(f"{key} = {toml_string(updates[key])}")
                 seen.add(key)
                 replaced = True
         if not replaced:
             out.append(line)
     for key, value in updates.items():
         if key not in seen:
-            out.append(f'{key} = "{value}"')
+            out.append(f"{key} = {toml_string(value)}")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
@@ -561,11 +611,20 @@ def service_file_content(path: Path) -> str:
     return systemd_unit()
 
 
+def bridge_program_args() -> list[str]:
+    """Return argv for the bridge process, including --env-file when present."""
+
+    args = [sys.executable, "-m", "hermes_cursor_sdk.bridge"]
+    env_file = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
+    if env_file.is_file():
+        args.extend(["--env-file", str(env_file)])
+    return args
+
+
 def launchd_plist(log_dir: Path) -> str:
-    python = escape(sys.executable)
     stdout = escape(str(log_dir / "cursor-bridge.out.log"))
     stderr = escape(str(log_dir / "cursor-bridge.err.log"))
-    env_file = escape(str(DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()))
+    arg_xml = "\n".join(f"    <string>{escape(part)}</string>" for part in bridge_program_args())
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
 "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -575,11 +634,7 @@ def launchd_plist(log_dir: Path) -> str:
   <string>{SERVICE_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{python}</string>
-    <string>-m</string>
-    <string>hermes_cursor_sdk.bridge</string>
-    <string>--env-file</string>
-    <string>{env_file}</string>
+{arg_xml}
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -595,17 +650,7 @@ def launchd_plist(log_dir: Path) -> str:
 
 
 def systemd_unit() -> str:
-    env_file = DEFAULT_BRIDGE_ENV_PATH.expanduser().resolve()
-    exec_start = " ".join(
-        shlex.quote(part)
-        for part in (
-            sys.executable,
-            "-m",
-            "hermes_cursor_sdk.bridge",
-            "--env-file",
-            str(env_file),
-        )
-    )
+    exec_start = " ".join(shlex.quote(part) for part in bridge_program_args())
     return f"""[Unit]
 Description=Hermes Cursor SDK bridge
 

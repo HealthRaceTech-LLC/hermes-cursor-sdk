@@ -139,6 +139,14 @@ def test_service_commands(
     assert "wrote service file" in capsys.readouterr().out
     assert cli.service_status()["installed"] is True
     content = (isolated_cli_paths / "service.file").read_text(encoding="utf-8")
+    assert "hermes_cursor_sdk.bridge" in content
+    assert "--env-file" not in content  # bridge.env not created yet
+
+    bridge_env = isolated_cli_paths / "cursor-sdk" / "bridge.env"
+    bridge_env.parent.mkdir(parents=True, exist_ok=True)
+    bridge_env.write_text("CURSOR_API_KEY=k\nHERMES_CURSOR_BRIDGE_TOKEN=t\n", encoding="utf-8")
+    assert cli.main(["service", "install"]) == 0
+    content = (isolated_cli_paths / "service.file").read_text(encoding="utf-8")
     assert "--env-file" in content
 
     assert cli.main(["service", "uninstall"]) == 0
@@ -203,6 +211,41 @@ def test_setup_requires_api_key(
     monkeypatch.delenv("HERMES_CURSOR_API_KEY", raising=False)
 
     assert cli.main(["setup", "--cwd", str(isolated_cli_paths / "project"), "--no-service"]) == 1
+
+
+def test_setup_reuses_credentials_from_profile_env(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_CURSOR_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_CURSOR_BRIDGE_TOKEN", raising=False)
+    hermes_env = isolated_cli_paths / ".hermes" / ".env"
+    hermes_env.parent.mkdir(parents=True, exist_ok=True)
+    hermes_env.write_text(
+        "CURSOR_API_KEY=from-profile\nHERMES_CURSOR_BRIDGE_TOKEN=existing-token\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        cli.main(
+            [
+                "setup",
+                "--cwd",
+                str(isolated_cli_paths / "project"),
+                "--no-service",
+            ]
+        )
+        == 0
+    )
+
+    parsed = config.parse_bridge_env_file(isolated_cli_paths / "cursor-sdk" / "bridge.env")
+    assert parsed["CURSOR_API_KEY"] == "from-profile"
+    assert parsed["HERMES_CURSOR_BRIDGE_TOKEN"] == "existing-token"
+
+
+def test_toml_string_escapes_windows_paths() -> None:
+    assert cli.toml_string(r"C:\Users\me\proj") == r'"C:\\Users\\me\\proj"'
 
 
 def test_write_bridge_env_preserves_existing_allowlisted_keys(tmp_path: Path) -> None:
