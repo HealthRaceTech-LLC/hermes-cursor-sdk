@@ -370,6 +370,60 @@ def test_doctor_prefers_profile_env_over_bridge_env(
     assert "bridge_cwd: /from/profile" in capsys.readouterr().out
 
 
+def test_status_respects_profile_flag(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_home = isolated_cli_paths / "profiles" / "co-cto"
+    plugin = profile_home / "plugins" / "model-providers" / "cursor"
+    monkeypatch.setattr(cli, "PLUGIN_DIR", None)
+    monkeypatch.setattr(
+        cli,
+        "resolve_hermes_home",
+        lambda profile=None: (
+            profile_home if profile == "co-cto" else isolated_cli_paths / ".hermes"
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "plugin_dir",
+        lambda profile=None: (
+            profile_home / "plugins" / "model-providers" / "cursor"
+            if profile == "co-cto"
+            else isolated_cli_paths / ".hermes" / "plugins" / "model-providers" / "cursor"
+        ),
+    )
+    plugin.mkdir(parents=True)
+    (plugin / cli.PLUGIN_MARKER).write_text('{"version":"test"}', encoding="utf-8")
+
+    assert cli.main(["status", "--profile", "co-cto"]) == 0
+    output = capsys.readouterr().out
+    assert f"hermes_home: {profile_home}" in output
+    assert "provider: installed" in output
+
+
+def test_status_and_doctor_read_base_url_from_bridge_env(
+    isolated_cli_paths: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("HERMES_CURSOR_BASE_URL", raising=False)
+    bridge_env = isolated_cli_paths / "cursor-sdk" / "bridge.env"
+    bridge_env.parent.mkdir(parents=True, exist_ok=True)
+    bridge_env.write_text(
+        "CURSOR_API_KEY=k\n"
+        "HERMES_CURSOR_BRIDGE_TOKEN=tok\n"
+        "HERMES_CURSOR_BASE_URL=http://127.0.0.1:9999/v1\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["provider", "install"]) == 0
+    assert cli.main(["status"]) == 0
+    assert "bridge_url: http://127.0.0.1:9999/v1" in capsys.readouterr().out
+    assert cli.main(["doctor", "--provider-mode"]) == 0
+    assert "bridge_url: http://127.0.0.1:9999/v1" in capsys.readouterr().out
+
+
 def test_bootstrap_service_fails_when_kickstart_fails(
     isolated_cli_paths: Path,
     monkeypatch: pytest.MonkeyPatch,

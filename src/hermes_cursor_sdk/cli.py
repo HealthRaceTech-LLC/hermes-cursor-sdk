@@ -52,7 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage the Hermes Cursor SDK bridge.")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("status", help="Show bridge, provider, and service status.")
+    status = subparsers.add_parser("status", help="Show bridge, provider, and service status.")
+    status.add_argument(
+        "--profile",
+        help="Hermes profile name (default: HERMES_HOME / active_profile).",
+    )
 
     doctor = subparsers.add_parser("doctor", help="Check local bridge/provider configuration.")
     doctor.add_argument(
@@ -134,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "status":
-            return cmd_status()
+            return cmd_status(profile=args.profile)
         if args.command == "doctor":
             return cmd_doctor(provider_mode=args.provider_mode, profile=args.profile)
         if args.command == "bridge":
@@ -161,28 +165,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
-def cmd_status() -> int:
+def read_bridge_env_map(settings: Any | None = None) -> dict[str, str]:
+    """Read allowlisted keys from the configured/shared bridge.env when present."""
+
+    resolved = settings if settings is not None else load_settings()
+    env_file = getattr(resolved, "bridge_env_file", None) or DEFAULT_BRIDGE_ENV_PATH
+    path = Path(env_file).expanduser().resolve()
+    if not path.is_file():
+        return {}
+    try:
+        return parse_bridge_env_file(path)
+    except ConfigurationError:
+        return {}
+
+
+def resolve_reported_bridge_url(
+    *,
+    settings: Any,
+    profile_env: Mapping[str, str],
+    bridge_env: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve the bridge base URL for status/doctor reporting."""
+
+    shared = bridge_env if bridge_env is not None else read_bridge_env_map(settings)
+    return (
+        os.environ.get("HERMES_CURSOR_BASE_URL")
+        or profile_env.get("HERMES_CURSOR_BASE_URL")
+        or shared.get("HERMES_CURSOR_BASE_URL")
+        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
+    ).rstrip("/")
+
+
+def cmd_status(*, profile: str | None = None) -> int:
     settings = load_settings()
-    hermes_home = resolve_hermes_home()
+    hermes_home = resolve_hermes_home(profile=profile)
     profile_env = read_env_file(hermes_home / ".env")
-    provider = provider_status()
+    bridge_env = read_bridge_env_map(settings)
+    provider = provider_status(profile=profile)
     service = service_status()
     bridge_token = (
         os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or settings.bridge_token
+        or bridge_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or ""
     ).strip()
     bridge_cwd = (
         os.environ.get("HERMES_CURSOR_BRIDGE_CWD")
         or profile_env.get("HERMES_CURSOR_BRIDGE_CWD")
         or (str(settings.bridge_cwd) if settings.bridge_cwd else "")
+        or bridge_env.get("HERMES_CURSOR_BRIDGE_CWD")
+        or ""
     )
-    bridge_url = (
-        os.environ.get("HERMES_CURSOR_BASE_URL")
-        or profile_env.get("HERMES_CURSOR_BASE_URL")
-        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
-    ).rstrip("/")
+    bridge_url = resolve_reported_bridge_url(
+        settings=settings, profile_env=profile_env, bridge_env=bridge_env
+    )
     print(f"hermes_home: {hermes_home}")
     print(f"bridge_url: {bridge_url}")
     print(f"bridge_expose: {settings.bridge_expose}")
@@ -197,6 +234,7 @@ def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
     settings = load_settings()
     hermes_home = resolve_hermes_home(profile=profile)
     profile_env = read_env_file(hermes_home / ".env")
+    bridge_env = read_bridge_env_map(settings)
     provider = provider_status(profile=profile)
     # Prefer process env + selected profile .env over shared bridge.env values
     # that load_settings() may have already absorbed.
@@ -204,18 +242,18 @@ def cmd_doctor(*, provider_mode: bool, profile: str | None = None) -> int:
         os.environ.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or profile_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or settings.bridge_token
+        or bridge_env.get("HERMES_CURSOR_BRIDGE_TOKEN")
         or ""
     ).strip()
     bridge_cwd = (
         os.environ.get("HERMES_CURSOR_BRIDGE_CWD")
         or profile_env.get("HERMES_CURSOR_BRIDGE_CWD")
         or (str(settings.bridge_cwd) if settings.bridge_cwd else None)
+        or bridge_env.get("HERMES_CURSOR_BRIDGE_CWD")
     )
-    bridge_url = (
-        os.environ.get("HERMES_CURSOR_BASE_URL")
-        or profile_env.get("HERMES_CURSOR_BASE_URL")
-        or f"http://{settings.bridge_host}:{settings.bridge_port}/v1"
-    ).rstrip("/")
+    bridge_url = resolve_reported_bridge_url(
+        settings=settings, profile_env=profile_env, bridge_env=bridge_env
+    )
     issues: list[str] = []
     if not bridge_token:
         issues.append("HERMES_CURSOR_BRIDGE_TOKEN is not set")
