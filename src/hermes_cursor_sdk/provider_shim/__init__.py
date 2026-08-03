@@ -1,0 +1,3 @@
+from hermes_cursor_sdk.provider import register_cursor_provider
+
+register_cursor_provider()

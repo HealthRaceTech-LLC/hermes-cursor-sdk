@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import pytest
+
 from hermes_cursor_sdk import __version__
 from hermes_cursor_sdk.bridge.server import main as bridge_main
 from hermes_cursor_sdk.cli import main as cli_main
+
+
+def assert_help_exits_zero(main) -> None:
+    try:
+        result = main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        assert result == 0
 
 
 def test_version_export_is_available() -> None:
@@ -10,11 +21,11 @@ def test_version_export_is_available() -> None:
     assert __version__
 
 
-def test_cli_help_exits_zero(capsys) -> None:
-    assert cli_main(["--help"]) == 0
-    assert "Hermes Cursor SDK CLI placeholder" in capsys.readouterr().out
+def test_cli_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert_help_exits_zero(cli_main)
+    assert "show this help message and exit" in capsys.readouterr().out
 
 
-def test_bridge_help_exits_zero(capsys) -> None:
-    assert bridge_main(["--help"]) == 0
-    assert "Hermes Cursor SDK bridge placeholder" in capsys.readouterr().out
+def test_bridge_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    assert_help_exits_zero(bridge_main)
+    assert "show this help message and exit" in capsys.readouterr().out

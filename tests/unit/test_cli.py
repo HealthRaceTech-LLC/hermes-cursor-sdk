@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from hermes_cursor_sdk import cli, config
+
+
+@pytest.fixture
+def isolated_cli_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "PLUGIN_DIR", tmp_path / ".hermes" / "plugins" / "cursor")
+    monkeypatch.setattr(cli, "service_path", lambda: tmp_path / "service.file")
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "missing.toml")
+    monkeypatch.setenv("HERMES_CURSOR_BRIDGE_TOKEN", "bridge-token")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-key")
+
+
+def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--help"])
+
+    assert exc.value.code == 0
+    assert "Manage the Hermes Cursor SDK bridge" in capsys.readouterr().out
+
+
+def test_status_exits_sensibly(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "bridge_url:" in output
+    assert "provider: not-installed" in output
+    assert "service: not-installed" in output
+
+
+def test_doctor_exits_sensibly_with_env_set(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["doctor", "--provider-mode"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Hermes Cursor SDK doctor" in output
+    assert "provider_name: cursor" in output
+    assert "status: ok" in output
+
+
+def test_provider_status_exits_sensibly(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["provider", "status"]) == 0
+
+    output = capsys.readouterr().out
+    assert '"state": "not-installed"' in output
+
+
+def test_provider_uninstall_not_installed(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["provider", "uninstall"]) == 0
+
+    assert "provider shim not installed" in capsys.readouterr().out
+
+
+def test_provider_uninstall_managed_provider(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli.PLUGIN_DIR.mkdir(parents=True)
+    (cli.PLUGIN_DIR / cli.PLUGIN_MARKER).write_text('{"version":"test"}', encoding="utf-8")
+
+    assert cli.main(["provider", "uninstall"]) == 0
+
+    assert not cli.PLUGIN_DIR.exists()
+    assert "removed provider shim" in capsys.readouterr().out
+
+
+def test_provider_install_refuses_unmanaged_directory(isolated_cli_paths: None) -> None:
+    cli.PLUGIN_DIR.mkdir(parents=True)
+    (cli.PLUGIN_DIR / "plugin.yaml").write_text("name: other\n", encoding="utf-8")
+
+    assert cli.main(["provider", "install"]) == 1
+
+
+def test_provider_install_and_status(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["provider", "install"]) == 0
+    assert cli.provider_status()["installed"] is True
+
+    output = capsys.readouterr().out
+    assert "installed provider shim" in output
+
+
+def test_read_provider_version_handles_missing_or_bad_marker(tmp_path: Path) -> None:
+    assert cli.read_provider_version(tmp_path) is None
+    (tmp_path / cli.PLUGIN_MARKER).write_text("not json", encoding="utf-8")
+
+    assert cli.read_provider_version(tmp_path) is None
+
+
+def test_is_managed_provider_accepts_legacy_plugin_yaml(tmp_path: Path) -> None:
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "plugin.yaml").write_text(
+        "name: cursor-provider\nkind: model-provider\n",
+        encoding="utf-8",
+    )
+
+    assert cli.is_managed_provider(tmp_path) is True
+
+
+def test_service_commands(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["service", "status"]) == 0
+    assert '"state": "not-installed"' in capsys.readouterr().out
+
+    assert cli.main(["service", "install"]) == 0
+    assert "wrote service file" in capsys.readouterr().out
+    assert cli.service_status()["installed"] is True
+
+    assert cli.main(["service", "uninstall"]) == 0
+    assert "removed service file" in capsys.readouterr().out
+    assert cli.service_status()["installed"] is False
+
+
+def test_service_uninstall_not_installed(
+    isolated_cli_paths: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["service", "uninstall"]) == 0
+
+    assert "service file not installed" in capsys.readouterr().out
+
+
+def test_bridge_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["bridge", "--help"])
+
+    assert exc.value.code == 0
+    assert "Arguments passed to bridge server" in capsys.readouterr().out
