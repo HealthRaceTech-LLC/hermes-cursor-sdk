@@ -140,7 +140,7 @@ def extract_assistant_text(run: Any) -> str:
                 return str(value)
         except Exception:
             # Some SDK objects expose text() before it is ready; fall back to messages.
-            text_attr = None
+            pass
     elif text_attr:
         return str(text_attr)
 
