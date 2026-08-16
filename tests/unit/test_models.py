@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,7 +24,7 @@ class SDKModel:
     name: str
     provider: str
     parameters: list[Any]
-    presets: list[str]
+    variants: list[Any]
 
 
 @dataclass
@@ -33,6 +33,19 @@ class SDKParameter:
     type: str
     values: list[str]
     default: str
+
+
+@dataclass
+class SDKVariantParam:
+    id: str
+    value: str
+
+
+@dataclass
+class SDKVariant:
+    display_name: str
+    is_default: bool = False
+    params: list[SDKVariantParam] = field(default_factory=list)
 
 
 def catalog() -> list[dict[str, Any]]:
@@ -120,13 +133,30 @@ def test_infer_model_context_length_from_catalog_context_param() -> None:
     assert selected == 272_000
 
 
+def test_infer_model_context_length_for_first_party_grok() -> None:
+    from hermes_cursor_sdk.models import infer_model_context_length
+
+    # Grok 4.5/4.6 are first-party Cursor models without a catalog `context`
+    # param; they use their fixed 256K window instead of the 200K fallback.
+    for model_id in ("grok-4.5", "grok-4.6"):
+        tokens, source = infer_model_context_length(model_id, {}, fallback=200_000)
+        assert tokens == 256_000
+        assert source == "cursor_model_window"
+
+
 def test_normalize_model_from_object_parameters() -> None:
     model = normalize_model(
         SDKModel(
             id="gpt-5",
             name="GPT-5",
             provider="cursor",
-            presets=["fast"],
+            variants=[
+                SDKVariant(
+                    display_name="Fast",
+                    is_default=True,
+                    params=[SDKVariantParam("effort", "high")],
+                )
+            ],
             parameters=[SDKParameter("effort", "string", ["low"], "low")],
         )
     )
@@ -138,7 +168,7 @@ def test_normalize_model_from_object_parameters() -> None:
         "values": ["low"],
         "default": "low",
     }
-    assert model["presets"] == ["fast"]
+    assert model["variants"] == [{"name": "Fast", "is_default": True, "params": {"effort": "high"}}]
 
 
 def test_normalize_repository_from_object() -> None:

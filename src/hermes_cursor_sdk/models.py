@@ -101,9 +101,15 @@ def _normalize_parameters(parameters: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
-# Composer models do not expose a catalog `context` param; Cursor documents a
-# fixed 200K window (Max Mode does not expand it).
-_COMPOSER_CONTEXT_LENGTH = 200_000
+# First-party Cursor models do not expose a catalog `context` param, so their
+# windows are fixed by design and cannot be read from the catalog. Composer is a
+# fixed 200K window (Max Mode does not expand it). Cursor Grok 4.5 is 256K, and
+# Grok 4.6 shares the Grok 4.5 base so it is also 256K.
+_FIXED_CONTEXT_LENGTHS: dict[str, int] = {
+    "composer": 200_000,
+    "grok-4.5": 256_000,
+    "grok-4.6": 256_000,
+}
 
 
 def parse_context_token_count(value: Any) -> int | None:
@@ -166,6 +172,16 @@ def catalog_context_options(
     return sorted(set(tokens))
 
 
+def _fixed_context_length(model_id: str | None) -> int | None:
+    """Return the fixed window for a first-party Cursor model, if known."""
+
+    mid = (model_id or "").strip().lower()
+    for prefix, tokens in _FIXED_CONTEXT_LENGTHS.items():
+        if mid.startswith(prefix):
+            return tokens
+    return None
+
+
 def infer_model_context_length(
     model_id: str | None,
     parameters: Mapping[str, Any] | None = None,
@@ -179,7 +195,8 @@ def infer_model_context_length(
     - Else if the catalog lists ``context`` options, advertise the **max**
       (e.g. 1M when Max Mode is available). Base/default is still exposed via
       ``context_options``.
-    - Composer models use a fixed 200K window.
+    - First-party Cursor models (Composer, Grok 4.5/4.6) use their fixed
+      windows because they do not expose a ``context`` param.
     """
 
     selected = parse_context_token_count(selected_context)
@@ -190,13 +207,37 @@ def infer_model_context_length(
     if options:
         return max(options), "cursor_model_window"
 
-    mid = (model_id or "").strip().lower()
-    if mid.startswith("composer"):
-        return _COMPOSER_CONTEXT_LENGTH, "cursor_model_window"
+    fixed = _fixed_context_length(model_id)
+    if fixed is not None:
+        return fixed, "cursor_model_window"
 
     if fallback is not None and fallback > 0:
         return fallback, "connector_budget"
     return None, None
+
+
+def _normalize_variants(value: Any) -> list[dict[str, Any]]:
+    """Normalize SDK ``variants`` (formerly ``presets``) into plain dicts.
+
+    Each variant is an effort/speed preset (e.g. ``fast``, ``effort=high``) with
+    an ``is_default`` flag; its ``params`` are ``{id: value}`` pairs.
+    """
+
+    if not value:
+        return []
+    result: list[dict[str, Any]] = []
+    for variant in value:
+        params = _value(variant, "params", default=[]) or []
+        result.append(
+            {
+                "name": _value(variant, "name", "display_name", default=""),
+                "is_default": bool(_value(variant, "is_default", default=False)),
+                "params": {
+                    str(_value(param, "id", "name")): _value(param, "value") for param in params
+                },
+            }
+        )
+    return result
 
 
 def normalize_model(model: Any, *, bridge_context_length: int | None = None) -> dict[str, Any]:
@@ -213,7 +254,7 @@ def normalize_model(model: Any, *, bridge_context_length: int | None = None) -> 
         "name": _value(model, "name", "display_name", default=str(model_id) if model_id else ""),
         "provider": _value(model, "provider"),
         "parameters": parameters,
-        "presets": _value(model, "presets", default=[]),
+        "variants": _normalize_variants(_value(model, "variants", "presets")),
         "cursor_context_length": cursor_context_length,
         "bridge_context_length": bridge_context_length,
         "context_source": context_source,

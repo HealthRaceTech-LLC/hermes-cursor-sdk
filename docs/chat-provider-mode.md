@@ -46,7 +46,7 @@ Missing this entry surfaces as: `Unknown provider 'cursor'. … define it in con
 
 - Requests that include Hermes `tools` / `tool_choice` are **stripped** (not forwarded). Cursor has its own tools inside the SDK agent; the bridge does not emulate Hermes `tool_calls`. Still disable Hermes file/terminal toolsets so you are not paying for unused Hermes tool schemas.
 - Hermes chat `session_id` is **not** mapped onto a sticky Cursor agent in v1 (each completion is a fresh local `Agent.prompt`).
-- Context length advertised on `/v1/models` prefers the **Cursor model window** (`context_source=cursor_model_window`): Composer family is a fixed **200K**; models with a catalog `context` param advertise the **max** option (often **1M**) and also return `context_options` (e.g. `[272000, 1000000]`). `HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH` is only the fallback (`context_source=connector_budget`, default 200000). Pin `model.context_length` in Hermes if a stale cache still shows the wrong max.
+- Context length advertised on `/v1/models` prefers the **Cursor model window** (`context_source=cursor_model_window`): first-party Cursor models use fixed windows (Composer family **200K**, Cursor Grok 4.5/4.6 **256K**); models with a catalog `context` param advertise the **max** option (often **1M**) and also return `context_options` (e.g. `[272000, 1000000]`). `HERMES_CURSOR_BRIDGE_CONTEXT_LENGTH` is only the fallback (`context_source=connector_budget`, default 200000). Pin `model.context_length` in Hermes if a stale cache still shows the wrong max.
 - Cloud runtime is **not** used as the Hermes chat brain in v1 (local only).
 - Streaming returns a standards-compatible SSE response (one assistant chunk is acceptable in v1).
 
@@ -56,12 +56,12 @@ Hermes statusbars show **used / max** from this bridge:
 
 | Field | Source | Notes |
 |---|---|---|
-| **max** (`context_length`) | `GET /v1/models` | Prefer `cursor_model_window` (Composer = 200K). Fallback: `connector_budget`. |
+| **max** (`context_length`) | `GET /v1/models` | Prefer `cursor_model_window` (Composer = 200K, Grok 4.5/4.6 = 256K). Fallback: `connector_budget`. |
 | **used** (`prompt_tokens`) | Chat completion `usage` | OpenAI aliases: `prompt_tokens` = Cursor `input_tokens + cache_read_tokens + cache_write_tokens`; `completion_tokens` = `output_tokens`. |
 
 Requirements:
 
-1. `/v1/models` must include the correct `context_length` for the active model (Composer-2.5 → **200000**). Pin `model.context_length: 200000` in the Hermes profile if a stale cache still shows 65K/256K.
+1. `/v1/models` must include the correct `context_length` for the active model (Composer-2.5 → **200000**, Cursor Grok 4.5/4.6 → **256000**). Pin `model.context_length` in the Hermes profile if a stale cache still shows 65K/256K.
 2. Non-stream completions include OpenAI-shaped `usage` when the Cursor SDK returns token counts; zero/missing usage is **omitted** (not faked as zeros).
 3. Streaming honors Hermes' `stream_options.include_usage` expectation by emitting a **final SSE chunk** with empty `choices` and `usage` before `[DONE]`.
 

@@ -141,6 +141,34 @@ def _cost_dict(cost: Any | None = None) -> CostDict:
     }
 
 
+def usage_breakdown(value: Any) -> dict[str, Any]:
+    """Normalize SDK usage/cost payloads into plain dicts.
+
+    Accepts ``cursor_sdk.AgentUsage`` / ``RunUsage`` dataclasses, plain dicts,
+    or ``None``, and returns ``{"usage": UsageDict, "cost": CostDict,
+    "runs": [...]}`` where each run entry carries its own ``run_id``, ``usage``,
+    and ``cost``. The SDK returns cost only from ``agent.get_usage()`` (server-
+    derived, eventually consistent); ``run.usage`` carries tokens but no cost.
+    """
+
+    if value is None:
+        return {"usage": _usage_dict(None), "cost": _cost_dict(None), "runs": []}
+    runs: list[dict[str, Any]] = []
+    for run in _value(value, "runs", default=[]) or []:
+        runs.append(
+            {
+                "run_id": _value(run, "run_id", "runId", "id"),
+                "usage": _usage_dict(_value(run, "usage")),
+                "cost": _cost_dict(_value(run, "cost")),
+            }
+        )
+    return {
+        "usage": _usage_dict(_value(value, "usage")),
+        "cost": _cost_dict(_value(value, "cost")),
+        "runs": runs,
+    }
+
+
 def _message_text(message: Any) -> str:
     parts: list[str] = []
     if isinstance(message, str):

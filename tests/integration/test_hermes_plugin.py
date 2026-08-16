@@ -22,7 +22,7 @@ def test_register_with_fake_plugin_context(monkeypatch: pytest.MonkeyPatch) -> N
 
     register(ctx)
 
-    assert len(ctx.tools) == 9
+    assert len(ctx.tools) == 10
     assert ctx.skills == [{"name": "cursor-sdk", "path": ctx.skills[0]["path"]}]
 
     monkeypatch.setenv("CURSOR_API_KEY", "cursor-key")

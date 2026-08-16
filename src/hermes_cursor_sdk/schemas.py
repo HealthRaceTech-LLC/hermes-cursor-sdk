@@ -170,6 +170,24 @@ CURSOR_CANCEL: JsonDict = {
     },
 }
 
+CURSOR_USAGE: JsonDict = {
+    "name": "cursor_usage",
+    "description": ("Return token usage and billed cost for a Cursor agent or one of its runs."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "minLength": 1},
+            "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Narrow the usage/cost breakdown to a single run.",
+            },
+        },
+        "required": ["agent_id"],
+        "additionalProperties": False,
+    },
+}
+
 CURSOR_SESSION_SEND: JsonDict = {
     "name": "cursor_session_send",
     "description": "Send a prompt into a Hermes-managed Cursor session.",
@@ -245,6 +263,7 @@ TOOL_SCHEMAS: list[JsonDict] = [
     CURSOR_STATUS,
     CURSOR_RESUME,
     CURSOR_CANCEL,
+    CURSOR_USAGE,
     CURSOR_SESSION_SEND,
     CURSOR_AGENT,
 ]
@@ -259,5 +278,6 @@ __all__ = [
     "CURSOR_SESSION_SEND",
     "CURSOR_START",
     "CURSOR_STATUS",
+    "CURSOR_USAGE",
     "TOOL_SCHEMAS",
 ]

@@ -40,6 +40,9 @@ class ToolClient:
     def cancel(self, **kwargs: Any) -> dict[str, Any]:
         return self._record("cancel", **kwargs)
 
+    def usage(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("usage", **kwargs)
+
     def session_send(self, **kwargs: Any) -> dict[str, Any]:
         return self._record("session_send", **kwargs)
 
@@ -74,6 +77,7 @@ def tool_client(monkeypatch: pytest.MonkeyPatch) -> ToolClient:
         ("cursor_status", {"agent_id": "agent-1"}, {}),
         ("cursor_resume", {"agent_id": "agent-1", "prompt": "continue"}, {}),
         ("cursor_cancel", {"agent_id": "agent-1"}, {}),
+        ("cursor_usage", {"agent_id": "agent-1"}, {}),
         ("cursor_session_send", {"prompt": "hi", "cwd": "/tmp", "session_tag": "tag"}, {}),
         ("cursor_agent", {"action": "list"}, {}),
     ],
@@ -189,6 +193,13 @@ def test_handlers_pass_optional_payloads(tool_client: ToolClient) -> None:
     assert (
         parse(
             tools.cursor_cancel,
+            {"agent_id": "agent-1", "run_id": "run-1"},
+        )["ok"]
+        is True
+    )
+    assert (
+        parse(
+            tools.cursor_usage,
             {"agent_id": "agent-1", "run_id": "run-1"},
         )["ok"]
         is True

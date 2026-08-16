@@ -254,18 +254,18 @@ wheels = [
 
 [[package]]
 name = "cursor-sdk"
-version = "1.0.26"
+version = "1.0.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/7d/15d31f5f2e723c41a2602342ef83e80978847a85bdb5af2722a688b50bf3/cursor_sdk-1.0.26.tar.gz", hash = "sha256:cd4bdf0b44bc61b517c78efc11e2a2b3bbb701f06d6b4b1b55107df9572ada04", size = 1176, upload-time = "2026-07-28T21:25:28.168Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/58/6b8ac6a13c6b2c621a02da646e773dff4225af48892b77294f1e3ca0e914/cursor_sdk-1.0.28.tar.gz", hash = "sha256:e7782527e0a62816abc0610df3abda893ff27b5ea7b8d470668e31d08892a604", size = 1177, upload-time = "2026-08-13T19:40:35.854Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/08/bfbbb547e77a5e357fcf1bc3ede9c2caaad1fe2a089710e66cba5e71d04b/cursor_sdk-1.0.26-py3-none-macosx_11_0_arm64.whl", hash = "sha256:fa2d3250ca257b788f6ad2336d41dc359b6523648f3481ed1f145603a04641a3", size = 47573952, upload-time = "2026-07-28T21:25:12.759Z" },
-    { url = "https://files.pythonhosted.org/packages/f2/b2/a8bb2e6754ddea9f0e17a2bd81090177855d423f64d55c7e84e79052755b/cursor_sdk-1.0.26-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:bbae2ded8213b3c150f5f4e26b89461e04b7eacd053c772304df2adb630cc0a6", size = 49071279, upload-time = "2026-07-28T21:25:16.613Z" },
-    { url = "https://files.pythonhosted.org/packages/48/0d/93077a5028ece54ded3796239a9a3cf7a721252473c05e79f92caaa2d82b/cursor_sdk-1.0.26-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:6d0a64fd3a8904efd738836aad08fb95ee84047757fd09dde6c9668cc5ae2de4", size = 56161125, upload-time = "2026-07-28T21:25:20.11Z" },
-    { url = "https://files.pythonhosted.org/packages/76/d8/99d0b9b9e26428b3d06dd1d359dfc6b51bb3755f31a2e7271a3c03feca23/cursor_sdk-1.0.26-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ba6d1c0c4a5d905f82aa04bf034cf8fa17a6b0f9a9b938eab47735913c1f8482", size = 56830391, upload-time = "2026-07-28T21:25:23.229Z" },
-    { url = "https://files.pythonhosted.org/packages/2f/b5/abd7b25c67b99c922b357bd041c99e3f6663c8548b9ce39d56c1a45ccf42/cursor_sdk-1.0.26-py3-none-win_amd64.whl", hash = "sha256:6c81e0a2244574a59892e34a3cefef496d22e584df5678e6b79ac418ccdc286f", size = 43592680, upload-time = "2026-07-28T21:25:26.167Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/c7/6b3e67d2ad66031ed2eff69565926967d45f4b2e1baa053d4d27c1814208/cursor_sdk-1.0.28-py3-none-macosx_11_0_arm64.whl", hash = "sha256:7a469b3e0c7492d8f5d51e60fc76e16374eabf25575e5f45eb47c43387ca422d", size = 49728133, upload-time = "2026-08-13T19:40:21.17Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/7d/29f80425242322a159a75c955e963b4c774cda694b25bc54c03f8cdeec36/cursor_sdk-1.0.28-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:2973f8b1642faea47e7bc98d4eefffcd0896bfc0d050203dd5a17b1cfe8d18c2", size = 51234000, upload-time = "2026-08-13T19:40:24.08Z" },
+    { url = "https://files.pythonhosted.org/packages/71/c0/a5948407f9146b1104bc70649fe39b17d63f31ef0f3d6887348ca00a83ee/cursor_sdk-1.0.28-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:602766b01f684c3bcbefaeb35d84c8f67ea36348e7320a8fa73fbd84f0ab567f", size = 58823722, upload-time = "2026-08-13T19:40:27.049Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/69/a0f81e92a8b22637a0e2f9662eb7fdd2ed3902026a3856cba6dc1af1b337/cursor_sdk-1.0.28-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a76f884ea91c21f75cb9391e65fe23bc626c4cb64b7fa32f63bac3d03f5df3da", size = 59520896, upload-time = "2026-08-13T19:40:30.033Z" },
+    { url = "https://files.pythonhosted.org/packages/64/c2/9af88511f7fe136b15d08cbece6c9191e16c9c988e66440dfdac6acc139c/cursor_sdk-1.0.28-py3-none-win_amd64.whl", hash = "sha256:436a588f7d1433eae844d3959fd2bacbd73d6a0fee7859addc1b09e620f42ba6", size = 45825448, upload-time = "2026-08-13T19:40:33.185Z" },
 ]
 
 [[package]]
@@ -367,7 +367,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'" },
-    { name = "cursor-sdk", specifier = ">=1.0.26,<2" },
+    { name = "cursor-sdk", specifier = ">=1.0.27,<2" },
     { name = "freezegun", marker = "extra == 'dev'" },
     { name = "httpx", marker = "extra == 'dev'" },
     { name = "pip-audit", marker = "extra == 'dev'" },

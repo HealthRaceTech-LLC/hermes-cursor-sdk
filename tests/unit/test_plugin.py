@@ -12,7 +12,7 @@ def test_register_captures_tools_and_skill() -> None:
 
     register(ctx)
 
-    assert len(ctx.tools) == 9
+    assert len(ctx.tools) == 10
     assert {tool["toolset"] for tool in ctx.tools} == {"cursor"}
     assert {tool["name"] for tool in ctx.tools} == {
         "cursor_models",
@@ -22,6 +22,7 @@ def test_register_captures_tools_and_skill() -> None:
         "cursor_status",
         "cursor_resume",
         "cursor_cancel",
+        "cursor_usage",
         "cursor_session_send",
         "cursor_agent",
     }
