@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- `cursor_usage` Hermes tool plus `CursorSDKClient.usage()` to report token usage and billed cost per agent or run, reading `agent.get_usage()` (cloud 1.0.25+ / local 1.0.27+) with a local store fallback
+- Capture and persist per-run cost on waited cloud runs; add a `cost_json` column to the runs table (auto-migrated)
+
 ### Fixed
 
 - Local chat via the bridge no longer crashes with `'NoneType' object is not iterable` when building `ModelSelection` with empty params
@@ -14,6 +19,8 @@
 - Do not map Hermes `session_id` onto Cursor agent sessions in v1 (stateless completions); clamp SDK `status_code=200` failures to HTTP 502
 - Emit OpenAI-shaped `usage` (including SSE final usage chunk) so Hermes CLI/Desktop context meters get `prompt_tokens`
 - Advertise per-model Cursor context windows on `/v1/models` (Composer 200K; switchable models use max, e.g. 1M) with `context_options`
+- Advertise the fixed 256K window for Cursor Grok 4.5/4.6 on `/v1/models` (they expose no catalog `context` param, like Composer)
+- Normalize model `variants` (renamed from `presets` in newer `cursor-sdk`), including `is_default` and per-variant params
 
 ## 0.1.0 — 2026-08-03
 

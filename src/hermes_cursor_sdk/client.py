@@ -36,6 +36,7 @@ from hermes_cursor_sdk.results import (
     extract_assistant_text,
     ok_result,
     to_openai_usage,
+    usage_breakdown,
 )
 from hermes_cursor_sdk.store import StateStore
 
@@ -313,8 +314,9 @@ class CursorSDKClient:
                         run_id, agent_id=agent_id, status=self._status(run) or "running"
                     )
                 terminal = self._wait(run) if wait else run
+                cost = self._capture_cost(agent, run_id) if wait and run_id else None
                 result = self._result_from_run(
-                    terminal, runtime="cloud", model=model_selection, agent_id=agent_id
+                    terminal, runtime="cloud", model=model_selection, agent_id=agent_id, cost=cost
                 )
                 if idempotency_key and result.get("ok") is True:
                     self.store.put_idempotency(
@@ -420,6 +422,33 @@ class CursorSDKClient:
                 )
         except Exception as exc:
             return error_result(map_exception(exc), agent_id=agent_id)
+
+    def usage(self, *, agent_id: str, run_id: str | None = None) -> ResultDict:
+        """Return token usage and billed cost for an agent (or one run).
+
+        Prefers ``agent.get_usage()`` (server-derived, cloud 1.0.25+ / local
+        1.0.27+); falls back to the local run store when the SDK does not expose
+        usage for the runtime. Cost is omitted when the backend has not settled
+        it yet.
+        """
+
+        try:
+            runtime = self._runtime(agent_id)
+            breakdown = self._usage_from_agent(agent_id, runtime, run_id)
+            source = "get_usage" if breakdown is not None else "store"
+            if breakdown is None:
+                breakdown = self._stored_usage(agent_id, run_id)
+            return ok_result(
+                agent_id=agent_id,
+                run_id=run_id,
+                runtime=runtime,
+                status="finished",
+                usage=breakdown["usage"],
+                cost=breakdown["cost"],
+                metadata={"runs": breakdown["runs"], "source": source},
+            )
+        except Exception as exc:
+            return error_result(map_exception(exc), agent_id=agent_id, run_id=run_id)
 
     def resume_and_send(
         self,
@@ -537,8 +566,9 @@ class CursorSDKClient:
                         run_id, agent_id=agent_id, status=self._status(run) or "running"
                     )
                 terminal = self._wait(run) if wait else run
+                cost = self._capture_cost(agent, run_id) if wait and run_id else None
                 return self._result_from_run(
-                    terminal, runtime=runtime, model=model_selection, agent_id=agent_id
+                    terminal, runtime=runtime, model=model_selection, agent_id=agent_id, cost=cost
                 )
             finally:
                 self._close(agent)
@@ -791,8 +821,113 @@ class CursorSDKClient:
             result = wait()
         return result or run
 
+    def _usage_from_agent(
+        self, agent_id: str, runtime: str, run_id: str | None
+    ) -> dict[str, Any] | None:
+        """Fetch normalized usage/cost via ``agent.get_usage()``, or None."""
+
+        api_key = require_api_key(self.settings)
+        with self._control_client(agent_id, api_key) as bridge:
+            stored = self.store.get_agent(agent_id) or {}
+            options = self._agent_options(
+                api_key=api_key,
+                model=stored.get("model"),
+                runtime=runtime,
+                cwd=stored.get("cwd") if runtime == "local" else None,
+            )
+            agent = self._agent_resume(agent_id, options, bridge)
+            try:
+                get_usage = getattr(agent, "get_usage", None)
+                if not callable(get_usage):
+                    return None
+                try:
+                    try:
+                        payload = get_usage(run_id=run_id)
+                    except TypeError:
+                        payload = get_usage()
+                except Exception:
+                    return None
+                return usage_breakdown(payload)
+            finally:
+                self._close(agent)
+
+    def _capture_cost(self, agent: Any, run_id: str | None) -> dict[str, Any] | None:
+        """Best-effort cost capture from ``agent.get_usage()`` after a run ends."""
+
+        get_usage = getattr(agent, "get_usage", None)
+        if not callable(get_usage) or not run_id:
+            return None
+        try:
+            try:
+                payload = get_usage(run_id=run_id)
+            except TypeError:
+                payload = get_usage()
+        except Exception:
+            return None
+        cost = usage_breakdown(payload).get("cost")
+        if not cost or (cost.get("raw_cost_cents") is None and cost.get("charged_cents") is None):
+            return None
+        return cost
+
+    def _stored_usage(self, agent_id: str, run_id: str | None) -> dict[str, Any]:
+        """Aggregate usage/cost from the local run store as a fallback."""
+
+        if run_id:
+            run = self.store.get_run(run_id) or {}
+            usage = run.get("usage") or {}
+            cost = run.get("cost") or {}
+            return {
+                "usage": usage,
+                "cost": cost,
+                "runs": [{"run_id": run_id, "usage": usage, "cost": cost}],
+            }
+        entries = [
+            {
+                "run_id": run.get("run_id"),
+                "usage": run.get("usage") or {},
+                "cost": run.get("cost") or {},
+            }
+            for run in self.store.list_runs(agent_id)
+        ]
+        token_keys = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+        )
+        usage = {key: 0 for key in token_keys}
+        cost: dict[str, Any] = {
+            "raw_cost_cents": None,
+            "charged_cents": None,
+            "pending": False,
+        }
+        for entry in entries:
+            for key in token_keys:
+                usage[key] += int((entry["usage"] or {}).get(key) or 0)
+            for key in ("raw_cost_cents", "charged_cents"):
+                value = (entry["cost"] or {}).get(key)
+                if value is not None:
+                    cost[key] = (cost[key] or 0) + float(value)
+        if not usage["total_tokens"]:
+            usage["total_tokens"] = (
+                usage["input_tokens"]
+                + usage["output_tokens"]
+                + usage["cache_read_tokens"]
+                + usage["cache_write_tokens"]
+                + usage["reasoning_tokens"]
+            )
+        return {"usage": usage, "cost": cost, "runs": entries}
+
     def _result_from_run(
-        self, run: Any, *, runtime: str, model: Any = None, agent_id: str | None = None
+        self,
+        run: Any,
+        *,
+        runtime: str,
+        model: Any = None,
+        agent_id: str | None = None,
+        cost: Any | None = None,
     ) -> ResultDict:
         agent_id = agent_id or self._agent_id(run)
         run_id = self._run_id(run)
@@ -810,7 +945,7 @@ class CursorSDKClient:
                 auto_create_pr=bool(existing.get("auto_create_pr", False)),
             )
         if run_id and agent_id:
-            self.store.upsert_run(run_id, agent_id=agent_id, status=status, usage=usage)
+            self.store.upsert_run(run_id, agent_id=agent_id, status=status, usage=usage, cost=cost)
             if text:
                 self.store.save_run_text(run_id, text)
         if status.lower() in {"error", "failed"}:
@@ -823,6 +958,7 @@ class CursorSDKClient:
                 result_text=text,
                 model=model,
                 usage=usage,
+                cost=cost,
             )
         return ok_result(
             agent_id=agent_id,
@@ -832,6 +968,7 @@ class CursorSDKClient:
             result_text=text,
             model=model,
             usage=usage,
+            cost=cost,
         )
 
     def _runtime(self, agent_id: str) -> str:

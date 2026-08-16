@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.helpers.fake_cursor_sdk import FakeCursorSDK, FakeRun
+from tests.helpers.fake_cursor_sdk import FakeAgent, FakeCursorSDK, FakeRun
 
 from hermes_cursor_sdk import client as client_module
 from hermes_cursor_sdk.client import CursorSDKClient
@@ -465,3 +465,82 @@ def test_result_from_run_preserves_existing_agent_metadata(
     assert stored["cwd"] == str(tmp_path)
     assert stored["repos"] == [{"url": "git@example.com:repo-1.git"}]
     assert stored["auto_create_pr"] is True
+
+
+def test_start_cloud_wait_captures_cost(
+    client: CursorSDKClient, fake_sdk: FakeCursorSDK, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def wait_with_cost(self: FakeRun, timeout: int | None = None) -> FakeRun:
+        self.cost = {"raw_cost_cents": 1.23, "charged_cents": 0.99, "pending": False}
+        self.status = "finished"
+        return self
+
+    monkeypatch.setattr(FakeRun, "wait", wait_with_cost)
+
+    result = client.start_cloud(
+        prompt="track cost",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=True,
+    )
+
+    assert result["ok"] is True
+    assert result["cost"]["charged_cents"] == 0.99
+    stored = client.store.get_run(str(result["run_id"]))
+    assert stored is not None
+    assert stored["cost"]["charged_cents"] == 0.99  # type: ignore[index]
+
+
+def test_usage_reports_cost_and_runs(client: CursorSDKClient, fake_sdk: FakeCursorSDK) -> None:
+    started = client.start_cloud(
+        prompt="hello world",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=False,
+    )
+    agent_id = str(started["agent_id"])
+    run_id = str(started["run_id"])
+    fake_sdk.runs[run_id].cost = {"raw_cost_cents": 1.23, "charged_cents": 0.99, "pending": False}
+
+    result = client.usage(agent_id=agent_id)
+
+    assert result["ok"] is True
+    assert result["metadata"]["source"] == "get_usage"
+    assert result["cost"]["charged_cents"] == 0.99
+    assert result["usage"]["total_tokens"] > 0
+    assert result["metadata"]["runs"][0]["run_id"] == run_id
+
+
+def test_usage_run_id_narrows_to_single_run(client: CursorSDKClient) -> None:
+    started = client.start_cloud(
+        prompt="hello",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=False,
+    )
+    agent_id = str(started["agent_id"])
+    run_id = str(started["run_id"])
+
+    result = client.usage(agent_id=agent_id, run_id=run_id)
+
+    assert result["ok"] is True
+    assert result["metadata"]["source"] == "get_usage"
+    assert len(result["metadata"]["runs"]) == 1
+    assert result["metadata"]["runs"][0]["run_id"] == run_id
+
+
+def test_usage_falls_back_to_store_when_get_usage_unavailable(
+    client: CursorSDKClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(FakeAgent, "get_usage")
+    started = client.start_cloud(
+        prompt="hello",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=True,
+    )
+    agent_id = str(started["agent_id"])
+    run_id = str(started["run_id"])
+
+    result = client.usage(agent_id=agent_id)
+
+    assert result["ok"] is True
+    assert result["metadata"]["source"] == "store"
+    assert result["usage"]["total_tokens"] > 0
+    assert result["metadata"]["runs"][0]["run_id"] == run_id

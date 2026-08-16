@@ -25,6 +25,38 @@ def test_create_schema_and_dir_mode(tmp_path: Path) -> None:
     assert stat.S_IMODE(store.store_dir.stat().st_mode) == 0o700
 
 
+def test_migrate_adds_cost_column_to_legacy_runs_table(tmp_path: Path) -> None:
+    # Simulate a database created before usage-cost tracking shipped (no
+    # cost_json column) and verify StateStore backfills it on open.
+    store_dir = tmp_path / "state"
+    store_dir.mkdir()
+    with sqlite3.connect(store_dir / "state.sqlite3") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at REAL);
+            INSERT INTO schema_version(version, applied_at) VALUES(1, 0);
+            CREATE TABLE agents (
+                agent_id TEXT PRIMARY KEY, runtime TEXT, cwd TEXT,
+                repos_json TEXT, model_json TEXT,
+                auto_create_pr INTEGER NOT NULL DEFAULT 0,
+                created_at REAL, updated_at REAL
+            );
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                agent_id TEXT REFERENCES agents(agent_id) ON DELETE CASCADE,
+                status TEXT, result_path TEXT, usage_json TEXT,
+                created_at REAL, updated_at REAL
+            );
+            """
+        )
+
+    store = StateStore(store_dir)
+    store.upsert_agent("agent-1", runtime="local")
+    store.upsert_run("run-1", agent_id="agent-1", status="finished", cost={"charged_cents": 0.5})
+
+    assert store.get_run("run-1")["cost"] == {"charged_cents": 0.5}  # type: ignore[index]
+
+
 def test_upsert_agent_run_session_and_idempotency(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state")
 
@@ -40,6 +72,7 @@ def test_upsert_agent_run_session_and_idempotency(tmp_path: Path) -> None:
         agent_id="agent-1",
         status="running",
         usage={"input_tokens": 1},
+        cost={"raw_cost_cents": 0.6, "charged_cents": 0.5, "pending": False},
     )
     session = store.set_session("session-1", agent_id="agent-1", cwd=tmp_path)
     idem = store.put_idempotency(
@@ -52,6 +85,7 @@ def test_upsert_agent_run_session_and_idempotency(tmp_path: Path) -> None:
     assert agent["repos"] == [{"id": "repo-1"}]
     assert agent["auto_create_pr"] is True
     assert run["usage"] == {"input_tokens": 1}
+    assert run["cost"] == {"raw_cost_cents": 0.6, "charged_cents": 0.5, "pending": False}
     assert session["agent_id"] == "agent-1"
     assert idem["payload"] == {"ok": True}
 

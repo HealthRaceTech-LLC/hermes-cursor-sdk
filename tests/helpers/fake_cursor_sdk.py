@@ -91,6 +91,7 @@ class FakeRun:
             "cache_write_tokens": 0,
             "reasoning_tokens": 0,
         }
+        self.cost: dict[str, Any] | None = None
         sdk.runs[self.id] = self
 
     def wait(self, timeout: int | None = None) -> FakeRun:
@@ -152,6 +153,42 @@ class FakeAgent:
 
     def close(self) -> None:
         self.closed = True
+
+    def get_usage(self, *, run_id: str | None = None) -> dict[str, Any]:
+        self.sdk.calls.append(
+            {"method": "agent.get_usage", "agent_id": self.agent_id, "run_id": run_id}
+        )
+        runs = self.sdk.agent_runs.get(self.agent_id, [])
+        entries: list[dict[str, Any]] = []
+        for rid in runs:
+            run = self.sdk.runs.get(rid)
+            if run is None:
+                continue
+            run_cost = (
+                dict(run.cost)
+                if run.cost is not None
+                else {"raw_cost_cents": None, "charged_cents": None}
+            )
+            entries.append({"run_id": rid, "usage": dict(run.usage), "cost": run_cost})
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+        }
+        cost: dict[str, Any] = {"raw_cost_cents": None, "charged_cents": None, "pending": False}
+        for entry in entries:
+            for key in usage:
+                usage[key] += int((entry["usage"] or {}).get(key) or 0)
+            for key in ("raw_cost_cents", "charged_cents"):
+                value = (entry["cost"] or {}).get(key)
+                if value is not None:
+                    cost[key] = (cost[key] or 0) + value
+        if run_id:
+            entries = [entry for entry in entries if entry["run_id"] == run_id]
+        return {"usage": usage, "runs": entries, "cost": cost}
 
     def archive(self) -> None:
         self.status = "archived"

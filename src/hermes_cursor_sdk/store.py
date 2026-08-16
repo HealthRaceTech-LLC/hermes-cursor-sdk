@@ -60,6 +60,7 @@ class StateStore:
                     status TEXT NOT NULL,
                     result_path TEXT,
                     usage_json TEXT,
+                    cost_json TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -87,6 +88,11 @@ class StateStore:
                     "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
                     (1, time.time()),
                 )
+            # Migration: add cost_json to runs for older databases created
+            # before usage-cost tracking shipped.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+            if "cost_json" not in columns:
+                conn.execute("ALTER TABLE runs ADD COLUMN cost_json TEXT")
 
     @staticmethod
     def _json(value: Any) -> str | None:
@@ -111,6 +117,8 @@ class StateStore:
             result["model"] = StateStore._loads(result.pop("model_json"))
         if "usage_json" in result:
             result["usage"] = StateStore._loads(result.pop("usage_json"))
+        if "cost_json" in result:
+            result["cost"] = StateStore._loads(result.pop("cost_json"))
         if "payload_json" in result:
             result["payload"] = StateStore._loads(result.pop("payload_json"))
         if "auto_create_pr" in result:
@@ -176,6 +184,7 @@ class StateStore:
         status: str,
         result_path: str | Path | None = None,
         usage: Any | None = None,
+        cost: Any | None = None,
     ) -> dict[str, Any]:
         now = time.time()
         with self._lock, self._connect() as conn:
@@ -187,15 +196,17 @@ class StateStore:
                     status,
                     result_path,
                     usage_json,
+                    cost_json,
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     agent_id=excluded.agent_id,
                     status=excluded.status,
                     result_path=COALESCE(excluded.result_path, runs.result_path),
                     usage_json=COALESCE(excluded.usage_json, runs.usage_json),
+                    cost_json=COALESCE(excluded.cost_json, runs.cost_json),
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -204,6 +215,7 @@ class StateStore:
                     status,
                     str(result_path) if result_path is not None else None,
                     self._json(usage),
+                    self._json(cost),
                     now,
                     now,
                 ),

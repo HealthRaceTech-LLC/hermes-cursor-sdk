@@ -9,6 +9,7 @@ from hermes_cursor_sdk.results import (
     ok_result,
     to_openai_usage,
     truncate_text,
+    usage_breakdown,
 )
 
 
@@ -87,6 +88,37 @@ def test_ok_result_normalizes_usage_git_cost_and_metadata() -> None:
     assert result["cost"]["charged_cents"] == 1.5
     assert result["cost"]["pending"] is True
     assert result["metadata"] == {"finish_reason": "stop"}
+
+
+def test_usage_breakdown_normalizes_agent_usage_shape() -> None:
+    breakdown = usage_breakdown(
+        {
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "cost": {"raw_cost_cents": 2.5, "charged_cents": 2.0},
+            "runs": [
+                {
+                    "run_id": "run-1",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "cost": {"raw_cost_cents": 2.5, "charged_cents": 2.0},
+                }
+            ],
+        }
+    )
+
+    assert breakdown["usage"]["total_tokens"] == 15
+    assert breakdown["cost"]["charged_cents"] == 2.0
+    assert breakdown["cost"]["pending"] is False
+    assert breakdown["runs"][0]["run_id"] == "run-1"
+    assert breakdown["runs"][0]["usage"]["input_tokens"] == 10
+    assert breakdown["runs"][0]["cost"]["raw_cost_cents"] == 2.5
+
+
+def test_usage_breakdown_handles_none() -> None:
+    breakdown = usage_breakdown(None)
+
+    assert breakdown["usage"]["total_tokens"] == 0
+    assert breakdown["cost"]["charged_cents"] is None
+    assert breakdown["runs"] == []
 
 
 def test_to_openai_usage_matches_hermes_canonical_prompt_tokens() -> None:

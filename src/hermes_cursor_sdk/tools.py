@@ -359,6 +359,15 @@ def cursor_cancel(args: dict[str, Any], **_: Any) -> Any:
 
 
 @_handler
+def cursor_usage(args: dict[str, Any], **_: Any) -> Any:
+    payload = {"agent_id": _required_str(args, "agent_id")}
+    run_id = _optional_str(args, "run_id")
+    if run_id is not None:
+        payload["run_id"] = run_id
+    return _invoke(("usage",), payload)
+
+
+@_handler
 def cursor_session_send(args: dict[str, Any], **kwargs: Any) -> Any:
     session_id = kwargs.get("session_id")
     task_id = kwargs.get("task_id")
@@ -444,6 +453,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "cursor_status": cursor_status,
     "cursor_resume": cursor_resume,
     "cursor_cancel": cursor_cancel,
+    "cursor_usage": cursor_usage,
     "cursor_session_send": cursor_session_send,
     "cursor_agent": cursor_agent,
 }
@@ -474,5 +484,6 @@ __all__ = [
     "cursor_session_send",
     "cursor_start",
     "cursor_status",
+    "cursor_usage",
     "list_tools",
 ]
