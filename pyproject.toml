@@ -38,6 +38,7 @@ hermes-cursor-bridge = "hermes_cursor_sdk.bridge.server:main"
 
 [project.entry-points."hermes_agent.plugins"]
 cursor = "hermes_cursor_sdk.plugin"
+cursor_context = "hermes_cursor_sdk.hermes"
 
 [project.optional-dependencies]
 dev = [
