@@ -53,9 +53,6 @@ class CursorContextEngine(_BASE):  # ty: ignore[unsupported-base]
     """
 
     def __init__(self) -> None:
-        # Identity
-        self.name: str = "cursor"
-
         # Token state (read by run_agent.py for display/logging)
         self.last_prompt_tokens: int = 0
         self.last_completion_tokens: int = 0
@@ -73,6 +70,12 @@ class CursorContextEngine(_BASE):  # ty: ignore[unsupported-base]
         # Cursor-specific disclosure
         self.compression_state: int = 0
         self._compression_state_label = COMPRESSION_STATE_LABELS[0]
+
+    # ---- Identity ----------------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        return "cursor"
 
     # ---- Core interface --------------------------------------------------
 
