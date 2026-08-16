@@ -270,6 +270,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         stream = bool(payload.get("stream", False))
         session_id = cursor.get("session_id")
+        # When Hermes does not send an explicit session_id, derive one
+        # from cwd so completions reuse the same Cursor agent instead of
+        # creating a fresh one per request.
+        if not session_id:
+            cwd = cursor.get("cwd") or get_setting(self.server.settings, "bridge_cwd", default=None)
+            cwd = cwd or Path.cwd()
+            session_id = f"auto:{cwd}"
         if session_id:
             response = self._handle_session_chat(session_id, payload, cursor, messages, stream)
         else:
@@ -548,7 +555,7 @@ def send_session(
             session_id=session_id,
             session_key=session_id,
             messages=list(messages),
-            prompt=messages_to_prompt(messages),
+            prompt=messages_to_prompt([messages[-1]]) if messages else "",
             model=payload.get("model"),
             cwd=cwd,
             params=params,
