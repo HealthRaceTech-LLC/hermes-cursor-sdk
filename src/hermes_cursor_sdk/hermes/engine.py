@@ -22,7 +22,9 @@ from typing import Any
 # a Hermes Python process. Falls back to ``object`` in dev/test.
 # ---------------------------------------------------------------------------
 try:
-    from agent.context_engine import ContextEngine  # type: ignore[import-untyped]
+    from agent.context_engine import (  # ty: ignore[unresolved-import]
+        ContextEngine,  # type: ignore[import-untyped]
+    )
 
     _BASE: type = ContextEngine
 except ImportError:
@@ -40,7 +42,7 @@ COMPRESSION_STATE_LABELS: dict[int, str] = {
 }
 
 
-class CursorContextEngine(_BASE):
+class CursorContextEngine(_BASE):  # ty: ignore[unsupported-base]
     """Pass-through context engine for Cursor-managed agents.
 
     Cursor agents handle context internally — there is nothing for
