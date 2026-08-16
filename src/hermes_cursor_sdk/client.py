@@ -434,7 +434,11 @@ class CursorSDKClient:
 
         try:
             runtime = self._runtime(agent_id)
-            breakdown = self._usage_from_agent(agent_id, runtime, run_id)
+            breakdown: dict[str, Any] | None = None
+            try:
+                breakdown = self._usage_from_agent(agent_id, runtime, run_id)
+            except Exception:
+                breakdown = None
             source = "get_usage" if breakdown is not None else "store"
             if breakdown is None:
                 breakdown = self._stored_usage(agent_id, run_id)
@@ -827,14 +831,18 @@ class CursorSDKClient:
         """Fetch normalized usage/cost via ``agent.get_usage()``, or None."""
 
         api_key = require_api_key(self.settings)
-        with self._control_client(agent_id, api_key) as bridge:
-            stored = self.store.get_agent(agent_id) or {}
-            options = self._agent_options(
-                api_key=api_key,
-                model=stored.get("model"),
-                runtime=runtime,
-                cwd=stored.get("cwd") if runtime == "local" else None,
-            )
+        stored = self.store.get_agent(agent_id) or {}
+        options = self._agent_options(
+            api_key=api_key,
+            model=stored.get("model"),
+            runtime=runtime,
+            cwd=stored.get("cwd") if runtime == "local" else None,
+        )
+        with (
+            self._control_client(agent_id, api_key)
+            if runtime == "local"
+            else self._null_context(None) as bridge
+        ):
             agent = self._agent_resume(agent_id, options, bridge)
             try:
                 get_usage = getattr(agent, "get_usage", None)

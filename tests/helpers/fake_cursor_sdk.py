@@ -170,6 +170,8 @@ class FakeAgent:
                 else {"raw_cost_cents": None, "charged_cents": None}
             )
             entries.append({"run_id": rid, "usage": dict(run.usage), "cost": run_cost})
+        if run_id:
+            entries = [entry for entry in entries if entry["run_id"] == run_id]
         usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -186,8 +188,6 @@ class FakeAgent:
                 value = (entry["cost"] or {}).get(key)
                 if value is not None:
                     cost[key] = (cost[key] or 0) + value
-        if run_id:
-            entries = [entry for entry in entries if entry["run_id"] == run_id]
         return {"usage": usage, "runs": entries, "cost": cost}
 
     def archive(self) -> None:

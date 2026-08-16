@@ -544,3 +544,44 @@ def test_usage_falls_back_to_store_when_get_usage_unavailable(
     assert result["metadata"]["source"] == "store"
     assert result["usage"]["total_tokens"] > 0
     assert result["metadata"]["runs"][0]["run_id"] == run_id
+
+
+def test_usage_cloud_does_not_launch_local_bridge(
+    client: CursorSDKClient, fake_sdk: FakeCursorSDK
+) -> None:
+    started = client.start_cloud(
+        prompt="hello",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=False,
+    )
+    agent_id = str(started["agent_id"])
+    fake_sdk.calls.clear()
+
+    result = client.usage(agent_id=agent_id)
+
+    assert result["ok"] is True
+    assert not any(call["method"] == "CursorClient.launch_bridge" for call in fake_sdk.calls)
+
+
+def test_usage_run_id_scopes_totals(client: CursorSDKClient, fake_sdk: FakeCursorSDK) -> None:
+    started = client.start_cloud(
+        prompt="first run",
+        repos=[{"url": "git@example.com:repo-1.git", "starting_ref": "main"}],
+        wait=True,
+    )
+    agent_id = str(started["agent_id"])
+    first_run_id = str(started["run_id"])
+    first_tokens = fake_sdk.runs[first_run_id].usage["input_tokens"]
+
+    resumed = client.resume_and_send(agent_id=agent_id, prompt="a longer second run now")
+    second_run_id = str(resumed["run_id"])
+    assert second_run_id != first_run_id
+
+    scoped = client.usage(agent_id=agent_id, run_id=first_run_id)
+    all_runs = client.usage(agent_id=agent_id)
+
+    assert scoped["ok"] is True
+    assert scoped["usage"]["input_tokens"] == first_tokens
+    assert len(scoped["metadata"]["runs"]) == 1
+    assert scoped["metadata"]["runs"][0]["run_id"] == first_run_id
+    assert all_runs["usage"]["input_tokens"] > scoped["usage"]["input_tokens"]
