@@ -434,9 +434,10 @@ class CursorSDKClient:
 
         try:
             runtime = self._runtime(agent_id)
+            api_key = require_api_key(self.settings)
             breakdown: dict[str, Any] | None = None
             try:
-                breakdown = self._usage_from_agent(agent_id, runtime, run_id)
+                breakdown = self._usage_from_agent(agent_id, api_key, runtime, run_id)
             except Exception:
                 breakdown = None
             source = "get_usage" if breakdown is not None else "store"
@@ -826,11 +827,10 @@ class CursorSDKClient:
         return result or run
 
     def _usage_from_agent(
-        self, agent_id: str, runtime: str, run_id: str | None
+        self, agent_id: str, api_key: str, runtime: str, run_id: str | None
     ) -> dict[str, Any] | None:
         """Fetch normalized usage/cost via ``agent.get_usage()``, or None."""
 
-        api_key = require_api_key(self.settings)
         stored = self.store.get_agent(agent_id) or {}
         options = self._agent_options(
             api_key=api_key,
