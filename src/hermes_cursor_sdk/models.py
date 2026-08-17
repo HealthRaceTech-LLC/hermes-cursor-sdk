@@ -449,7 +449,32 @@ EFFORT_ALIAS_MAP: dict[str, str] = {
     "extra_high": "xhigh",
     "extra-high": "xhigh",
     "none": "minimal",
+    "minimal": "none",
 }
+
+# Order matters: try low-end aliases first for low requests, high-end aliases
+# for high requests. Used as a last-resort fallback when the raw value is not
+# directly listed in the catalog's valid values.
+_LOW_EFFORT_VALUES = ("minimal", "none", "low")
+_HIGH_EFFORT_VALUES = ("max", "xhigh", "extra-high", "extra_high", "high", "medium")
+
+
+def _resolve_effort_fallback(raw_val: str, valid_values: list[str]) -> str | None:
+    """Pick a safe fallback value for an unmatched effort level.
+
+    Low-effort requests (minimal/none/low) fall back to the lowest available
+    option; high-effort requests fall back to the highest available option.
+    """
+    lower = [v.lower() for v in valid_values]
+    if raw_val in _LOW_EFFORT_VALUES:
+        for candidate in _LOW_EFFORT_VALUES:
+            if candidate in lower:
+                return candidate
+    if raw_val in _HIGH_EFFORT_VALUES or raw_val == "max":
+        for candidate in _HIGH_EFFORT_VALUES:
+            if candidate in lower:
+                return candidate
+    return None
 
 
 def map_reasoning_effort(
@@ -531,7 +556,15 @@ def map_reasoning_effort(
                 out[target_key] = alt
                 return out
 
-    out[target_key] = valid_values[-1]
+    # Last resort: pick a safe fallback based on whether the request was for a
+    # low or high effort level. Never silently escalate a low request to the
+    # highest available option.
+    fallback = _resolve_effort_fallback(raw_val, valid_values)
+    if fallback is not None:
+        out[target_key] = fallback
+        return out
+
+    out[target_key] = valid_values[0]
     return out
 
 
@@ -553,10 +586,10 @@ def resolve_model_selection(
         model_id = str(model or default_model)
 
     if strict:
-        _validate_params(model_id, requested_params, catalog)
         entry = _catalog_entry(catalog, model_id)
         if entry is not None:
             requested_params = map_reasoning_effort(entry, requested_params)
+        _validate_params(model_id, requested_params, catalog)
         return _model_selection(model_id, requested_params)
 
     entry = _catalog_entry(catalog, model_id)

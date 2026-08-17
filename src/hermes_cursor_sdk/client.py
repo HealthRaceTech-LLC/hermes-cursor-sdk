@@ -388,6 +388,13 @@ class CursorSDKClient:
 
     @staticmethod
     def _is_stuck_session_error(result: ResultDict, exc: Exception | None) -> bool:
+        """Detect session-infrastructure errors that warrant recreating the agent.
+
+        Only transient infrastructure errors (busy/active-run, connection
+        refusal, bridge startup) should trigger session recreation. Ordinary
+        task failures (`run_failed`, `Cursor run failed`) are surfaced to the
+        caller without dropping the sticky Cursor conversation context.
+        """
         if exc is not None:
             mapped = map_exception(exc)
             err_msg = f"{exc} {mapped.get('message') or ''}"
@@ -407,14 +414,13 @@ class CursorSDKClient:
         code_lower = code.lower()
 
         return (
-            code_lower in {"busy", "agent_startup", "run_failed"}
+            code_lower in {"busy", "agent_startup"}
             or "active run" in err_msg_lower
             or "already has active" in err_msg_lower
             or "connection" in err_msg_lower
             or "refused" in err_msg_lower
             or "errno 61" in err_msg_lower
             or "bridge" in err_msg_lower
-            or "cursor run failed" in err_msg_lower
         )
 
     def session_send(
@@ -832,14 +838,21 @@ class CursorSDKClient:
                 except TypeError:
                     bridge = cursor_client.launch_bridge(workspace=kwargs["workspace"])
                 break
-            except Exception as exc:
+            except (ConnectionError, ConnectionRefusedError):
+                # Only retry transient connection-refused errors during bridge
+                # subprocess startup. Permanent errors (PermissionError,
+                # FileNotFoundError, etc.) should surface immediately.
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
+            except OSError as exc:
+                # Retry only Errno 61 (connection refused on macOS) and similar
+                # connection-related OSError subclasses; do not retry other
+                # OSError variants like PermissionError or FileNotFoundError.
                 msg = str(exc).lower()
                 if attempt < max_attempts - 1 and (
-                    "connection" in msg
-                    or "refused" in msg
-                    or "errno 61" in msg
-                    or "bridge" in msg
-                    or isinstance(exc, (ConnectionError, OSError))
+                    "connection refused" in msg or "errno 61" in msg or "connection" in msg
                 ):
                     time.sleep(0.5 * (attempt + 1))
                     continue
