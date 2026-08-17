@@ -449,7 +449,7 @@ class CursorSDKClient:
                     resolved_agent_id,
                 )
                 self.store.delete_session(session_key)
-                fresh_agent_id = self.session_ensure_local(
+                fresh_agent_id, _ = self.session_ensure_local(
                     cwd=cwd, session_key=session_key, model=model, params=params
                 )
                 result = self._resume_and_send(
