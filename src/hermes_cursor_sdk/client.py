@@ -366,6 +366,7 @@ class CursorSDKClient:
                 )
                 self.store.set_session(session_key, agent_id=agent_id, cwd=cwd_path)
                 result = None
+                
                 if prompt is not None:
                     run = self._agent_send(agent, prompt)
                     run_id = self._run_id(run)
@@ -482,22 +483,17 @@ class CursorSDKClient:
                     resolved_agent_id,
                 )
                 self.store.delete_session(session_key)
-                fresh_agent_id, _ = self.session_ensure_local(
-                    cwd=cwd, session_key=session_key, model=model, params=params
+                fresh_agent_id, fresh_result = self.session_ensure_local(
+                    cwd=cwd,
+                    session_key=session_key,
+                    model=model,
+                    params=params,
+                    prompt=prompt,
+                    wait=wait,
                 )
                 resolved_agent_id = fresh_agent_id
-                try:
-                    result = self._resume_and_send(
-                        agent_id=fresh_agent_id,
-                        prompt=prompt,
-                        cwd=cwd,
-                        force=True,
-                        model=model,
-                        params=params,
-                        wait=wait,
-                    )
-                except Exception as exc:
-                    result = error_result(map_exception(exc), agent_id=resolved_agent_id)
+                if fresh_result is not None:
+                    result = fresh_result
 
             if close and session_key and result.get("ok") is True:
                 self.store.delete_session(session_key)
@@ -646,8 +642,15 @@ class CursorSDKClient:
     ) -> ResultDict:
         stored = self.store.get_agent(agent_id) or {}
         runtime = str(stored.get("runtime") or self._runtime(agent_id))
-        if not force and self._is_busy(agent_id):
+        
+        # When forcing, clear any busy states tracked locally in the store.
+        # This only clears our local state - if the Cursor backend considers the
+        # agent busy, _agent_send will still raise BusyError.
+        if force:
+            self.store.clear_active_runs(agent_id)
+        elif self._is_busy(agent_id):
             raise BusyError("Agent has an active run")
+            
         api_key = require_api_key(self.settings)
         cwd_path = self._validate_cwd(cwd or stored.get("cwd")) if runtime == "local" else None
         model_selection = (
