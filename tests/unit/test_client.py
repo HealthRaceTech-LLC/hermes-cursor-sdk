@@ -174,6 +174,65 @@ def test_session_send_close_keeps_session_on_failure(
     assert client.store.get_session("session-fail") is not None
 
 
+def test_session_send_auto_recovers_on_busy_exception(
+    client: CursorSDKClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_agent_id, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-busy")
+    calls: list[str] = []
+
+    def mock_resume_and_send(*, agent_id: str, **kwargs: object) -> dict[str, object]:
+        calls.append(agent_id)
+        if agent_id == old_agent_id:
+            from hermes_cursor_sdk.errors import BusyError
+
+            raise BusyError("Agent has an active run")
+        return {"ok": True, "agent_id": agent_id, "status": "finished"}
+
+    monkeypatch.setattr(client, "_resume_and_send", mock_resume_and_send)
+
+    result = client.session_send(
+        session_key="session-busy",
+        prompt="hello again",
+        cwd=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert result["agent_id"] != old_agent_id
+    assert len(calls) == 2
+    assert calls[0] == old_agent_id
+    assert calls[1] == result["agent_id"]
+    new_session = client.store.get_session("session-busy")
+    assert new_session is not None
+    assert str(new_session["agent_id"]) == result["agent_id"]
+
+
+def test_session_send_auto_recovers_on_connection_exception(
+    client: CursorSDKClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_agent_id, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-conn")
+    calls: list[str] = []
+
+    def mock_resume_and_send(*, agent_id: str, **kwargs: object) -> dict[str, object]:
+        calls.append(agent_id)
+        if agent_id == old_agent_id:
+            raise ConnectionRefusedError("[Errno 61] Connection refused")
+        return {"ok": True, "agent_id": agent_id, "status": "finished"}
+
+    monkeypatch.setattr(client, "_resume_and_send", mock_resume_and_send)
+
+    result = client.session_send(
+        session_key="session-conn",
+        prompt="hello again",
+        cwd=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert result["agent_id"] != old_agent_id
+    assert len(calls) == 2
+    assert calls[0] == old_agent_id
+    assert calls[1] == result["agent_id"]
+
+
 def test_denied_cwd_returns_invalid_args(client: CursorSDKClient) -> None:
     result = client.run_local(prompt="nope", cwd=Path.home() / ".ssh")
 

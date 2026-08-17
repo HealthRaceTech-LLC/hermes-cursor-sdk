@@ -386,6 +386,37 @@ class CursorSDKClient:
             finally:
                 self._close(agent)
 
+    @staticmethod
+    def _is_stuck_session_error(result: ResultDict, exc: Exception | None) -> bool:
+        if exc is not None:
+            mapped = map_exception(exc)
+            err_msg = f"{exc} {mapped.get('message') or ''}"
+            code = str(mapped.get("code") or "")
+        elif result.get("ok") is False:
+            error_dict = result.get("error") or {}
+            if isinstance(error_dict, Mapping):
+                err_msg = str(error_dict.get("message") or "")
+                code = str(error_dict.get("code") or result.get("code") or "")
+            else:
+                err_msg = str(error_dict)
+                code = str(result.get("code") or "")
+        else:
+            return False
+
+        err_msg_lower = err_msg.lower()
+        code_lower = code.lower()
+
+        return (
+            code_lower in {"busy", "agent_startup", "run_failed"}
+            or "active run" in err_msg_lower
+            or "already has active" in err_msg_lower
+            or "connection" in err_msg_lower
+            or "refused" in err_msg_lower
+            or "errno 61" in err_msg_lower
+            or "bridge" in err_msg_lower
+            or "cursor run failed" in err_msg_lower
+        )
+
     def session_send(
         self,
         *,
@@ -415,37 +446,32 @@ class CursorSDKClient:
                         prompt=prompt,
                         wait=wait,
                     )
+            attempt_exc: Exception | None = None
             if initial_result is not None:
                 result = initial_result
             else:
                 if not resolved_agent_id:
                     raise InvalidArgsError("agent_id or session_key is required")
-                result = self._resume_and_send(
-                    agent_id=resolved_agent_id,
-                    prompt=prompt,
-                    cwd=cwd,
-                    force=force,
-                    model=model,
-                    params=params,
-                    wait=wait,
-                )
+                try:
+                    result = self._resume_and_send(
+                        agent_id=resolved_agent_id,
+                        prompt=prompt,
+                        cwd=cwd,
+                        force=force,
+                        model=model,
+                        params=params,
+                        wait=wait,
+                    )
+                except Exception as exc:
+                    attempt_exc = exc
+                    result = error_result(map_exception(exc), agent_id=resolved_agent_id)
+
             # Auto-recovery: If an existing agent stuck with an active run error,
-            # recreate a fresh agent for this session and retry once.
-            err_msg = str((result.get("error") or {}).get("message") or "")
-            if (
-                result.get("ok") is False
-                and session_key
-                and cwd
-                and (
-                    "active run" in err_msg.lower()
-                    or "connection" in err_msg.lower()
-                    or "refused" in err_msg.lower()
-                    or "errno 61" in err_msg.lower()
-                    or "bridge" in err_msg.lower()
-                )
-            ):
+            # connection/bridge error, or run failure, recreate a fresh agent for
+            # this session and retry once.
+            if session_key and cwd and self._is_stuck_session_error(result, attempt_exc):
                 LOGGER.warning(
-                    "Session %s agent %s stuck with active run; recreating agent...",
+                    "Session %s agent %s stuck; recreating agent...",
                     session_key,
                     resolved_agent_id,
                 )
@@ -453,15 +479,20 @@ class CursorSDKClient:
                 fresh_agent_id, _ = self.session_ensure_local(
                     cwd=cwd, session_key=session_key, model=model, params=params
                 )
-                result = self._resume_and_send(
-                    agent_id=fresh_agent_id,
-                    prompt=prompt,
-                    cwd=cwd,
-                    force=True,
-                    model=model,
-                    params=params,
-                    wait=wait,
-                )
+                resolved_agent_id = fresh_agent_id
+                try:
+                    result = self._resume_and_send(
+                        agent_id=fresh_agent_id,
+                        prompt=prompt,
+                        cwd=cwd,
+                        force=True,
+                        model=model,
+                        params=params,
+                        wait=wait,
+                    )
+                except Exception as exc:
+                    result = error_result(map_exception(exc), agent_id=resolved_agent_id)
+
             if close and session_key and result.get("ok") is True:
                 self.store.delete_session(session_key)
             return result
