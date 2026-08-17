@@ -26,6 +26,8 @@ from hermes_cursor_sdk.errors import (
 from hermes_cursor_sdk.models import (
     CursorPrompt,
     CursorResult,
+    _catalog_entry,
+    map_reasoning_effort,
     normalize_model,
     normalize_repository,
     resolve_model_selection,
@@ -341,10 +343,12 @@ class CursorSDKClient:
         session_key: str,
         model: Any = None,
         params: Mapping[str, Any] | None = None,
-    ) -> str:
+        prompt: str | None = None,
+        wait: bool = True,
+    ) -> tuple[str, ResultDict | None]:
         existing = self.store.get_session(session_key)
         if existing:
-            return str(existing["agent_id"])
+            return str(existing["agent_id"]), None
         api_key = require_api_key(self.settings)
         cwd_path = self._validate_cwd(cwd)
         model_selection = self._resolve_model(model, params)
@@ -361,9 +365,64 @@ class CursorSDKClient:
                     agent_id, runtime="local", cwd=cwd_path, model=model_selection
                 )
                 self.store.set_session(session_key, agent_id=agent_id, cwd=cwd_path)
-                return agent_id
+                result = None
+                
+                if prompt is not None:
+                    run = self._agent_send(agent, prompt)
+                    run_id = self._run_id(run)
+                    if run_id:
+                        self.store.upsert_run(
+                            run_id, agent_id=agent_id, status=self._status(run) or "running"
+                        )
+                    terminal = self._wait(run) if wait else run
+                    cost = self._capture_cost(agent, run_id) if wait and run_id else None
+                    result = self._result_from_run(
+                        terminal,
+                        runtime="local",
+                        model=model_selection,
+                        agent_id=agent_id,
+                        cost=cost,
+                    )
+                return agent_id, result
             finally:
                 self._close(agent)
+
+    @staticmethod
+    def _is_stuck_session_error(result: ResultDict, exc: Exception | None) -> bool:
+        """Detect session-infrastructure errors that warrant recreating the agent.
+
+        Only transient infrastructure errors (busy/active-run, connection
+        refusal, bridge startup) should trigger session recreation. Ordinary
+        task failures (`run_failed`, `Cursor run failed`) are surfaced to the
+        caller without dropping the sticky Cursor conversation context.
+        """
+        if exc is not None:
+            mapped = map_exception(exc)
+            err_msg = f"{exc} {mapped.get('message') or ''}"
+            code = str(mapped.get("code") or "")
+        elif result.get("ok") is False:
+            error_dict = result.get("error") or {}
+            if isinstance(error_dict, Mapping):
+                err_msg = str(error_dict.get("message") or "")
+                code = str(error_dict.get("code") or result.get("code") or "")
+            else:
+                err_msg = str(error_dict)
+                code = str(result.get("code") or "")
+        else:
+            return False
+
+        err_msg_lower = err_msg.lower()
+        code_lower = code.lower()
+
+        return (
+            code_lower in {"busy", "agent_startup"}
+            or "active run" in err_msg_lower
+            or "already has active" in err_msg_lower
+            or "connection" in err_msg_lower
+            or "refused" in err_msg_lower
+            or "errno 61" in err_msg_lower
+            or "bridge" in err_msg_lower
+        )
 
     def session_send(
         self,
@@ -380,25 +439,62 @@ class CursorSDKClient:
     ) -> ResultDict:
         resolved_agent_id = agent_id
         try:
+            initial_result = None
             if not resolved_agent_id and session_key:
                 session = self.store.get_session(session_key)
                 if session:
                     resolved_agent_id = str(session["agent_id"])
                 elif cwd is not None:
-                    resolved_agent_id = self.session_ensure_local(
-                        cwd=cwd, session_key=session_key, model=model, params=params
+                    resolved_agent_id, initial_result = self.session_ensure_local(
+                        cwd=cwd,
+                        session_key=session_key,
+                        model=model,
+                        params=params,
+                        prompt=prompt,
+                        wait=wait,
                     )
-            if not resolved_agent_id:
-                raise InvalidArgsError("agent_id or session_key is required")
-            result = self._resume_and_send(
-                agent_id=resolved_agent_id,
-                prompt=prompt,
-                cwd=cwd,
-                force=force,
-                model=model,
-                params=params,
-                wait=wait,
-            )
+            attempt_exc: Exception | None = None
+            if initial_result is not None:
+                result = initial_result
+            else:
+                if not resolved_agent_id:
+                    raise InvalidArgsError("agent_id or session_key is required")
+                try:
+                    result = self._resume_and_send(
+                        agent_id=resolved_agent_id,
+                        prompt=prompt,
+                        cwd=cwd,
+                        force=force,
+                        model=model,
+                        params=params,
+                        wait=wait,
+                    )
+                except Exception as exc:
+                    attempt_exc = exc
+                    result = error_result(map_exception(exc), agent_id=resolved_agent_id)
+
+            # Auto-recovery: If an existing agent stuck with an active run error,
+            # connection/bridge error, or run failure, recreate a fresh agent for
+            # this session and retry once.
+            if session_key and cwd and self._is_stuck_session_error(result, attempt_exc):
+                LOGGER.warning(
+                    "Session %s agent %s stuck; recreating agent...",
+                    session_key,
+                    resolved_agent_id,
+                )
+                self.store.delete_session(session_key)
+                fresh_agent_id, fresh_result = self.session_ensure_local(
+                    cwd=cwd,
+                    session_key=session_key,
+                    model=model,
+                    params=params,
+                    prompt=prompt,
+                    wait=wait,
+                )
+                resolved_agent_id = fresh_agent_id
+                if fresh_result is not None:
+                    result = fresh_result
+
             if close and session_key and result.get("ok") is True:
                 self.store.delete_session(session_key)
             return result
@@ -546,8 +642,15 @@ class CursorSDKClient:
     ) -> ResultDict:
         stored = self.store.get_agent(agent_id) or {}
         runtime = str(stored.get("runtime") or self._runtime(agent_id))
-        if not force and self._is_busy(agent_id):
+        
+        # When forcing, clear any busy states tracked locally in the store.
+        # This only clears our local state - if the Cursor backend considers the
+        # agent busy, _agent_send will still raise BusyError.
+        if force:
+            self.store.clear_active_runs(agent_id)
+        elif self._is_busy(agent_id):
             raise BusyError("Agent has an active run")
+            
         api_key = require_api_key(self.settings)
         cwd_path = self._validate_cwd(cwd or stored.get("cwd")) if runtime == "local" else None
         model_selection = (
@@ -580,26 +683,18 @@ class CursorSDKClient:
     def _resolve_model(self, model: Any, params: Mapping[str, Any] | None) -> Any:
         catalog = self.list_models()
         merged_params = {**self.settings.provider_model_params, **dict(params or {})}
-        # Hermes OpenAI clients send transport knobs (max_tokens, …) that are
-        # not Cursor ModelSelection params for every model. Keep only catalog-
-        # declared keys so chat-provider mode does not 400 on normal Hermes
-        # requests; Phase 1 tools still validate via resolve_model_selection.
         if isinstance(model, dict):
             model_id = str(model.get("id") or model.get("name") or self.settings.default_model)
         else:
             model_id = str(model or self.settings.default_model)
-        entry = next(
-            (
-                item
-                for item in catalog
-                if item.get("id") == model_id or item.get("name") == model_id
-            ),
-            None,
-        )
+        entry = _catalog_entry(catalog, model_id)
         if entry is not None:
+            merged_params = map_reasoning_effort(entry, merged_params)
             allowed = set((entry.get("parameters") or {}).keys())
             merged_params = {key: value for key, value in merged_params.items() if key in allowed}
-        return resolve_model_selection(model, merged_params, catalog, self.settings.default_model)
+        return resolve_model_selection(
+            model, merged_params, catalog, self.settings.default_model, strict=False
+        )
 
     def _validate_cwd(self, cwd: str | Path | None) -> Path:
         if cwd is None:
@@ -737,10 +832,34 @@ class CursorSDKClient:
             "api_key": api_key,
             "timeout": self.settings.sdk_http_timeout,
         }
-        try:
-            bridge = cursor_client.launch_bridge(**kwargs)
-        except TypeError:
-            bridge = cursor_client.launch_bridge(workspace=kwargs["workspace"])
+        max_attempts = 3
+        bridge = None
+        for attempt in range(max_attempts):
+            try:
+                try:
+                    bridge = cursor_client.launch_bridge(**kwargs)
+                except TypeError:
+                    bridge = cursor_client.launch_bridge(workspace=kwargs["workspace"])
+                break
+            except (ConnectionError, ConnectionRefusedError):
+                # Only retry transient connection-refused errors during bridge
+                # subprocess startup. Permanent errors (PermissionError,
+                # FileNotFoundError, etc.) should surface immediately.
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
+            except OSError as exc:
+                # Retry only Errno 61 (connection refused on macOS) and similar
+                # connection-related OSError subclasses; do not retry other
+                # OSError variants like PermissionError or FileNotFoundError.
+                msg = str(exc).lower()
+                if attempt < max_attempts - 1 and (
+                    "connection refused" in msg or "errno 61" in msg or "connection" in msg
+                ):
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
         if hasattr(bridge, "__enter__"):
             with bridge as client:
                 yield client

@@ -58,7 +58,7 @@ def test_parse_cursor_extension_defaults_and_request_params() -> None:
         cursor,
     )
 
-    assert cursor == {"session_id": None, "cwd": None, "params": {"effort": "high"}}
+    assert cursor == {"session_id": None, "cwd": None, "force": False, "params": {"effort": "high"}}
     # OpenAI sampling knobs are dropped; Cursor-mappable fields + cursor.params remain.
     assert params == {
         "max_tokens": 256,
@@ -297,3 +297,19 @@ def test_serve_http_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert server.serve_http(Settings(api_key="cursor-key")) == 0
     assert "server_close" in closed
+
+
+def test_raise_for_result_error_maps_active_run_to_409_busy() -> None:
+    with pytest.raises(server.BridgeError) as exc:
+        server.raise_for_result_error(
+            {
+                "ok": False,
+                "error": {
+                    "message": "Agent agent-123 already has active run",
+                    "code": "cursor_error",
+                },
+            }
+        )
+
+    assert exc.value.status == 409
+    assert exc.value.payload()["error"]["code"] == "busy"

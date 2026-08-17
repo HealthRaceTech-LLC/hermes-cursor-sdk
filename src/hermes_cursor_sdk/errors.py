@@ -247,6 +247,8 @@ def _code_from_status(status_code: int | None, message: str) -> str | None:
     if status_code == 429:
         return "rate_limited"
     if status_code in {500, 502}:
+        if "active run" in lower or "already has active" in lower:
+            return "busy"
         return "internal"
     if status_code in {503, 504}:
         return "capacity"
@@ -279,10 +281,24 @@ def _code_from_exception(exc: BaseException, status_code: int | None, message: s
         return "unsupported_runtime"
     if "unsupported" in lower:
         return "unsupported"
-    if "busy" in lower or "conflict" in lower:
+    if (
+        "busy" in lower
+        or "conflict" in lower
+        or "active run" in lower
+        or "already has active" in lower
+    ):
         return "busy"
     if "expired" in lower:
         return "run_expired"
+    if (
+        isinstance(
+            exc, (CursorAgentError, ConnectionRefusedError, ConnectionResetError, ConnectionError)
+        )
+        or "connection refused" in lower
+        or "errno 61" in lower
+        or "connecterror" in name
+    ):
+        return "agent_startup"
     if isinstance(exc, CursorAgentError):
         return "agent_startup"
     return "internal"
@@ -309,7 +325,7 @@ def map_exception(exc: BaseException) -> dict[str, Any]:
         code = _code_from_exception(exc, status_code, message)
         retryable = bool(
             _get_attr(exc, "is_retryable", "retryable")
-            or code in {"capacity", "rate_limited", "busy", "timeout", "internal"}
+            or code in {"capacity", "rate_limited", "busy", "timeout", "internal", "agent_startup"}
         )
         retry_after = _get_attr(exc, "retry_after")
         request_id = _get_attr(exc, "request_id", "x_request_id", "trace_id")
@@ -317,6 +333,9 @@ def map_exception(exc: BaseException) -> dict[str, Any]:
 
     if code not in ERROR_CODES:
         code = "internal"
+
+    if code == "busy" and (status_code is None or status_code in {500, 502}):
+        status_code = 409
 
     return {
         "message": message,

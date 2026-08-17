@@ -276,12 +276,33 @@ def test_resolve_model_selection_invalid_param_raises() -> None:
             {"temperature": 0.2},
             catalog(),
             "composer-2.5",
+            strict=True,
         )
 
 
 def test_resolve_model_selection_unknown_model_raises() -> None:
     with pytest.raises(InvalidArgsError, match="Unknown Cursor model"):
-        resolve_model_selection("missing", {}, catalog(), "composer-2.5")
+        resolve_model_selection("missing", {}, catalog(), "composer-2.5", strict=True)
+
+
+def test_resolve_model_selection_non_strict_sanitizes_params_and_prefixes() -> None:
+    # Handles cursor/ prefix, unknown parameters like temperature, and alias matching
+    selection = resolve_model_selection(
+        "cursor/composer-2.5",
+        {"temperature": 0.7, "max_tokens": 1024, "reasoning_effort": "high"},
+        catalog(),
+        "composer-2.5",
+    )
+    assert selection_id(selection) == "composer-2.5"
+
+    grok_selection = resolve_model_selection(
+        "grok-4.5",
+        {"temperature": 0.5, "reasoning_effort": "max"},
+        [{"id": "grok-4.6", "parameters": {"effort": {"name": "effort", "values": ["xhigh"]}}}],
+        "composer-2.5",
+    )
+    assert selection_id(grok_selection) == "grok-4.6"
+    assert selection_params(grok_selection) == {"effort": "xhigh"}
 
 
 def test_model_selection_falls_back_to_positional_constructors(
@@ -312,3 +333,56 @@ def test_model_selection_falls_back_to_positional_constructors(
 
     assert selection_id(selection) == "composer-2.5"
     assert selection_params(selection) == {"reasoning_effort": "high"}
+
+
+def test_map_reasoning_effort_maps_and_clamps() -> None:
+    from hermes_cursor_sdk.models import map_reasoning_effort
+
+    grok_entry = {
+        "id": "grok-4.6",
+        "parameters": {
+            "effort": {
+                "name": "effort",
+                "values": [
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "high"},
+                    {"value": "xhigh"},
+                ],
+            },
+            "fast": {"name": "fast", "values": [{"value": "false"}, {"value": "true"}]},
+        },
+    }
+
+    assert map_reasoning_effort(grok_entry, {"reasoning_effort": "max"}) == {"effort": "xhigh"}
+    assert map_reasoning_effort(grok_entry, {"reasoning_effort": "medium"}) == {"effort": "medium"}
+
+    gpt_entry = {
+        "id": "gpt-5.5",
+        "parameters": {
+            "reasoning": {
+                "name": "reasoning",
+                "values": [
+                    {"value": "none"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "high"},
+                    {"value": "extra-high"},
+                ],
+            },
+        },
+    }
+    assert map_reasoning_effort(gpt_entry, {"reasoning_effort": "max"}) == {
+        "reasoning": "extra-high"
+    }
+    assert map_reasoning_effort(gpt_entry, {"reasoning_effort": "xhigh"}) == {
+        "reasoning": "extra-high"
+    }
+
+    composer_entry = {
+        "id": "composer-2.5",
+        "parameters": {
+            "fast": {"name": "fast", "values": [{"value": "false"}, {"value": "true"}]},
+        },
+    }
+    assert map_reasoning_effort(composer_entry, {"reasoning_effort": "max"}) == {}

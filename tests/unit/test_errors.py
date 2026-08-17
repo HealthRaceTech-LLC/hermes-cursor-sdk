@@ -150,3 +150,20 @@ def test_map_exception_copies_retry_metadata() -> None:
     assert mapped["retryable"] is True
     assert mapped["retry_after"] == 3
     assert mapped["request_id"] == "req-1"
+
+
+def test_map_exception_active_run_maps_to_busy_409() -> None:
+    exc = Exception("Agent agent-3c44a668-cace-4316-9c54-54e3e5f65ce0 already has active run")
+    mapped = map_exception(exc)
+
+    assert mapped["code"] == "busy"
+    assert mapped["status_code"] == 409
+    assert mapped["retryable"] is True
+
+
+def test_map_exception_connection_refused_maps_to_agent_startup() -> None:
+    exc = ConnectionRefusedError("[Errno 61] Connection refused")
+    mapped = map_exception(exc)
+
+    assert mapped["code"] == "agent_startup"
+    assert mapped["retryable"] is True

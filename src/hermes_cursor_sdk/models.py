@@ -290,10 +290,89 @@ def list_repositories(api_key: str) -> list[dict[str, Any]]:
     ]
 
 
+KNOWN_MODEL_ALIASES: dict[str, str] = {
+    "grok-4.5": "grok-4.6",
+    "grok-4.5-fast": "grok-4.6",
+    "grok-4-5": "grok-4.6",
+    "grok-4-6": "grok-4.6",
+    "sonnet-3.5": "claude-3.5-sonnet",
+    "sonnet-3-5": "claude-3.5-sonnet",
+    "claude-3-5-sonnet": "claude-3.5-sonnet",
+    "gpt-4o": "gpt-5.5",
+}
+
+
+def clean_model_id(model_id: Any) -> str:
+    if model_id is None:
+        return ""
+    s = str(model_id).strip()
+    for prefix in ("cursor/", "hermes/", "openai/", "anthropic/"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    return s.strip()
+
+
 def _catalog_entry(catalog: list[dict[str, Any]], model_id: str) -> dict[str, Any] | None:
-    for entry in catalog:
-        if entry.get("id") == model_id or entry.get("name") == model_id:
-            return entry
+    if not catalog or not model_id:
+        return None
+    raw_id = str(model_id).strip()
+    cleaned = clean_model_id(raw_id)
+    aliased = KNOWN_MODEL_ALIASES.get(cleaned.lower(), cleaned)
+
+    # 1. Exact match on raw_id, cleaned, or aliased
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        for entry in catalog:
+            eid = str(entry.get("id") or "")
+            ename = str(entry.get("name") or "")
+            if eid == target or ename == target:
+                return entry
+
+    # 2. Case-insensitive match
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        target_lower = target.lower()
+        for entry in catalog:
+            eid = str(entry.get("id") or "").lower()
+            ename = str(entry.get("name") or "").lower()
+            if eid == target_lower or ename == target_lower:
+                return entry
+
+    # 3. Normalized punctuation match (dots/hyphens/underscores)
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        target_norm = target.lower().replace(".", "-").replace("_", "-").replace(" ", "-")
+        for entry in catalog:
+            eid = (
+                str(entry.get("id") or "")
+                .lower()
+                .replace(".", "-")
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            ename = (
+                str(entry.get("name") or "")
+                .lower()
+                .replace(".", "-")
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            if eid == target_norm or ename == target_norm:
+                return entry
+
+    # 4. Substring / prefix match
+    if cleaned:
+        cleaned_lower = cleaned.lower()
+        for entry in catalog:
+            eid = str(entry.get("id") or "").lower()
+            ename = str(entry.get("name") or "").lower()
+            if cleaned_lower in eid or eid in cleaned_lower or cleaned_lower in ename:
+                return entry
+
     return None
 
 
@@ -366,11 +445,136 @@ def _model_selection(model_id: str, params: Mapping[str, Any]) -> Any:
             return serialized
 
 
+EFFORT_ALIAS_MAP: dict[str, str] = {
+    "extra_high": "xhigh",
+    "extra-high": "xhigh",
+    "none": "minimal",
+    "minimal": "none",
+}
+
+# Order matters: try low-end aliases first for low requests, high-end aliases
+# for high requests. Used as a last-resort fallback when the raw value is not
+# directly listed in the catalog's valid values.
+_LOW_EFFORT_VALUES = ("minimal", "none", "low")
+_HIGH_EFFORT_VALUES = ("max", "xhigh", "extra-high", "extra_high", "high", "medium")
+
+
+def _resolve_effort_fallback(raw_val: str, valid_values: list[str]) -> str | None:
+    """Pick a safe fallback value for an unmatched effort level.
+
+    Low-effort requests (minimal/none/low) fall back to the lowest available
+    option; high-effort requests fall back to the highest available option.
+    """
+    lower = [v.lower() for v in valid_values]
+    if raw_val in _LOW_EFFORT_VALUES:
+        for candidate in _LOW_EFFORT_VALUES:
+            if candidate in lower:
+                return candidate
+    if raw_val in _HIGH_EFFORT_VALUES or raw_val == "max":
+        for candidate in _HIGH_EFFORT_VALUES:
+            if candidate in lower:
+                return candidate
+    return None
+
+
+def map_reasoning_effort(
+    model_entry: Mapping[str, Any] | None, params: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Map reasoning_effort to model's effort/reasoning parameter and clamp values."""
+
+    if not params:
+        return {}
+
+    out = dict(params)
+    raw_effort = out.pop("reasoning_effort", None)
+    if raw_effort is None or model_entry is None:
+        return out
+
+    raw_val = str(raw_effort).strip().lower()
+
+    if isinstance(model_entry, Mapping):
+        param_defs = model_entry.get("parameters") or {}
+    else:
+        param_defs = getattr(model_entry, "parameters", None) or {}
+
+    if isinstance(param_defs, (list, tuple)):
+        param_map: dict[str, Any] = {}
+        for p in param_defs:
+            pid = getattr(p, "id", None) or (p.get("id") if isinstance(p, Mapping) else None)
+            if pid:
+                param_map[pid] = p
+        param_defs = param_map
+
+    target_key = None
+    if "effort" in param_defs:
+        target_key = "effort"
+    elif "reasoning" in param_defs:
+        target_key = "reasoning"
+    elif "reasoning_effort" in param_defs:
+        target_key = "reasoning_effort"
+
+    if not target_key:
+        return out
+
+    param_def = param_defs[target_key]
+    valid_values: list[str] = []
+
+    if isinstance(param_def, Mapping):
+        raw_vals = param_def.get("values") or []
+    else:
+        raw_vals = getattr(param_def, "values", None) or []
+
+    for v in raw_vals:
+        val_str = getattr(v, "value", None) or (
+            v.get("value") if isinstance(v, Mapping) else str(v)
+        )
+        if val_str:
+            valid_values.append(str(val_str).lower())
+
+    if not valid_values:
+        out[target_key] = raw_val
+        return out
+
+    if raw_val in valid_values:
+        out[target_key] = raw_val
+        return out
+
+    aliased = EFFORT_ALIAS_MAP.get(raw_val, raw_val)
+    if aliased in valid_values:
+        out[target_key] = aliased
+        return out
+
+    if raw_val in ("xhigh", "extra-high", "extra_high"):
+        for alt in ("xhigh", "extra-high", "high"):
+            if alt in valid_values:
+                out[target_key] = alt
+                return out
+
+    if raw_val == "max":
+        for alt in ("max", "xhigh", "extra-high", "high"):
+            if alt in valid_values:
+                out[target_key] = alt
+                return out
+
+    # Last resort: pick a safe fallback based on whether the request was for a
+    # low or high effort level. Never silently escalate a low request to the
+    # highest available option.
+    fallback = _resolve_effort_fallback(raw_val, valid_values)
+    if fallback is not None:
+        out[target_key] = fallback
+        return out
+
+    out[target_key] = valid_values[0]
+    return out
+
+
 def resolve_model_selection(
     model: str | dict[str, Any] | None,
     params: Mapping[str, Any] | None,
     catalog: list[dict[str, Any]],
     default_model: str,
+    *,
+    strict: bool = False,
 ) -> Any:
     """Validate requested model/params and return SDK-ready selection."""
 
@@ -380,5 +584,29 @@ def resolve_model_selection(
         requested_params = {**dict(model.get("params") or {}), **requested_params}
     else:
         model_id = str(model or default_model)
-    _validate_params(model_id, requested_params, catalog)
-    return _model_selection(model_id, requested_params)
+
+    if strict:
+        entry = _catalog_entry(catalog, model_id)
+        if entry is not None:
+            requested_params = map_reasoning_effort(entry, requested_params)
+        _validate_params(model_id, requested_params, catalog)
+        return _model_selection(model_id, requested_params)
+
+    entry = _catalog_entry(catalog, model_id)
+    if entry is not None:
+        canonical_id = str(entry.get("id") or model_id)
+        requested_params = map_reasoning_effort(entry, requested_params)
+        allowed = set((entry.get("parameters") or {}).keys())
+        filtered_params = {k: v for k, v in requested_params.items() if k in allowed}
+        return _model_selection(canonical_id, filtered_params)
+
+    cleaned_id = clean_model_id(model_id)
+    default_entry = _catalog_entry(catalog, default_model)
+    if default_entry is not None:
+        canonical_id = str(default_entry.get("id") or default_model)
+        requested_params = map_reasoning_effort(default_entry, requested_params)
+        allowed = set((default_entry.get("parameters") or {}).keys())
+        filtered_params = {k: v for k, v in requested_params.items() if k in allowed}
+        return _model_selection(canonical_id, filtered_params)
+
+    return _model_selection(cleaned_id or default_model, {})

@@ -268,6 +268,14 @@ class StateStore:
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE session_key=?", (session_key,))
 
+    def clear_active_runs(self, agent_id: str) -> None:
+        """Mark any busy/active runs for the agent as failed/cancelled."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE runs SET status='cancelled', updated_at=? WHERE agent_id=? AND status IN ('queued', 'pending', 'running', 'in_progress')",
+                (time.time(), agent_id)
+            )
+
     def save_run_text(self, run_id: str, text: str) -> Path:
         runs_dir = self.store_dir / "runs"
         runs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
