@@ -26,6 +26,7 @@ from hermes_cursor_sdk.errors import (
 from hermes_cursor_sdk.models import (
     CursorPrompt,
     CursorResult,
+    _catalog_entry,
     map_reasoning_effort,
     normalize_model,
     normalize_repository,
@@ -642,27 +643,18 @@ class CursorSDKClient:
     def _resolve_model(self, model: Any, params: Mapping[str, Any] | None) -> Any:
         catalog = self.list_models()
         merged_params = {**self.settings.provider_model_params, **dict(params or {})}
-        # Hermes OpenAI clients send transport knobs (max_tokens, …) that are
-        # not Cursor ModelSelection params for every model. Keep only catalog-
-        # declared keys so chat-provider mode does not 400 on normal Hermes
-        # requests; Phase 1 tools still validate via resolve_model_selection.
         if isinstance(model, dict):
             model_id = str(model.get("id") or model.get("name") or self.settings.default_model)
         else:
             model_id = str(model or self.settings.default_model)
-        entry = next(
-            (
-                item
-                for item in catalog
-                if item.get("id") == model_id or item.get("name") == model_id
-            ),
-            None,
-        )
+        entry = _catalog_entry(catalog, model_id)
         if entry is not None:
             merged_params = map_reasoning_effort(entry, merged_params)
             allowed = set((entry.get("parameters") or {}).keys())
             merged_params = {key: value for key, value in merged_params.items() if key in allowed}
-        return resolve_model_selection(model, merged_params, catalog, self.settings.default_model)
+        return resolve_model_selection(
+            model, merged_params, catalog, self.settings.default_model, strict=False
+        )
 
     def _validate_cwd(self, cwd: str | Path | None) -> Path:
         if cwd is None:

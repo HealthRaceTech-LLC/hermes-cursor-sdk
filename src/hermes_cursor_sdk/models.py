@@ -290,10 +290,89 @@ def list_repositories(api_key: str) -> list[dict[str, Any]]:
     ]
 
 
+KNOWN_MODEL_ALIASES: dict[str, str] = {
+    "grok-4.5": "grok-4.6",
+    "grok-4.5-fast": "grok-4.6",
+    "grok-4-5": "grok-4.6",
+    "grok-4-6": "grok-4.6",
+    "sonnet-3.5": "claude-3.5-sonnet",
+    "sonnet-3-5": "claude-3.5-sonnet",
+    "claude-3-5-sonnet": "claude-3.5-sonnet",
+    "gpt-4o": "gpt-5.5",
+}
+
+
+def clean_model_id(model_id: Any) -> str:
+    if model_id is None:
+        return ""
+    s = str(model_id).strip()
+    for prefix in ("cursor/", "hermes/", "openai/", "anthropic/"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    return s.strip()
+
+
 def _catalog_entry(catalog: list[dict[str, Any]], model_id: str) -> dict[str, Any] | None:
-    for entry in catalog:
-        if entry.get("id") == model_id or entry.get("name") == model_id:
-            return entry
+    if not catalog or not model_id:
+        return None
+    raw_id = str(model_id).strip()
+    cleaned = clean_model_id(raw_id)
+    aliased = KNOWN_MODEL_ALIASES.get(cleaned.lower(), cleaned)
+
+    # 1. Exact match on raw_id, cleaned, or aliased
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        for entry in catalog:
+            eid = str(entry.get("id") or "")
+            ename = str(entry.get("name") or "")
+            if eid == target or ename == target:
+                return entry
+
+    # 2. Case-insensitive match
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        target_lower = target.lower()
+        for entry in catalog:
+            eid = str(entry.get("id") or "").lower()
+            ename = str(entry.get("name") or "").lower()
+            if eid == target_lower or ename == target_lower:
+                return entry
+
+    # 3. Normalized punctuation match (dots/hyphens/underscores)
+    for target in (raw_id, cleaned, aliased):
+        if not target:
+            continue
+        target_norm = target.lower().replace(".", "-").replace("_", "-").replace(" ", "-")
+        for entry in catalog:
+            eid = (
+                str(entry.get("id") or "")
+                .lower()
+                .replace(".", "-")
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            ename = (
+                str(entry.get("name") or "")
+                .lower()
+                .replace(".", "-")
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            if eid == target_norm or ename == target_norm:
+                return entry
+
+    # 4. Substring / prefix match
+    if cleaned:
+        cleaned_lower = cleaned.lower()
+        for entry in catalog:
+            eid = str(entry.get("id") or "").lower()
+            ename = str(entry.get("name") or "").lower()
+            if cleaned_lower in eid or eid in cleaned_lower or cleaned_lower in ename:
+                return entry
+
     return None
 
 
@@ -461,6 +540,8 @@ def resolve_model_selection(
     params: Mapping[str, Any] | None,
     catalog: list[dict[str, Any]],
     default_model: str,
+    *,
+    strict: bool = False,
 ) -> Any:
     """Validate requested model/params and return SDK-ready selection."""
 
@@ -470,8 +551,29 @@ def resolve_model_selection(
         requested_params = {**dict(model.get("params") or {}), **requested_params}
     else:
         model_id = str(model or default_model)
+
+    if strict:
+        _validate_params(model_id, requested_params, catalog)
+        entry = _catalog_entry(catalog, model_id)
+        if entry is not None:
+            requested_params = map_reasoning_effort(entry, requested_params)
+        return _model_selection(model_id, requested_params)
+
     entry = _catalog_entry(catalog, model_id)
     if entry is not None:
+        canonical_id = str(entry.get("id") or model_id)
         requested_params = map_reasoning_effort(entry, requested_params)
-    _validate_params(model_id, requested_params, catalog)
-    return _model_selection(model_id, requested_params)
+        allowed = set((entry.get("parameters") or {}).keys())
+        filtered_params = {k: v for k, v in requested_params.items() if k in allowed}
+        return _model_selection(canonical_id, filtered_params)
+
+    cleaned_id = clean_model_id(model_id)
+    default_entry = _catalog_entry(catalog, default_model)
+    if default_entry is not None:
+        canonical_id = str(default_entry.get("id") or default_model)
+        requested_params = map_reasoning_effort(default_entry, requested_params)
+        allowed = set((default_entry.get("parameters") or {}).keys())
+        filtered_params = {k: v for k, v in requested_params.items() if k in allowed}
+        return _model_selection(canonical_id, filtered_params)
+
+    return _model_selection(cleaned_id or default_model, {})
