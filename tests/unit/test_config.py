@@ -104,6 +104,7 @@ def test_load_settings_reads_toml_from_temp_home(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_CURSOR_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr(config, "CONFIG_PATH", Path("~/.hermes/cursor-sdk/config.toml"))
 
     settings = load_settings(env={})

@@ -505,7 +505,8 @@ def parse_cursor_extension(value: Any) -> dict[str, Any]:
             param="cursor.params",
         )
 
-    return {"session_id": session_id, "cwd": cwd, "params": dict(params)}
+    force = bool(value.get("force") or params.get("force"))
+    return {"session_id": session_id, "cwd": cwd, "force": force, "params": dict(params)}
 
 
 def request_params(payload: Mapping[str, Any], cursor: Mapping[str, Any]) -> dict[str, Any]:
@@ -559,6 +560,7 @@ def send_session(
             model=payload.get("model"),
             cwd=cwd,
             params=params,
+            force=bool(cursor.get("force")),
             stream=stream,
             wait=True,
         )
@@ -794,6 +796,14 @@ def raise_for_result_error(value: Any) -> None:
     if not isinstance(value, Mapping) or value.get("ok", True):
         return
     error = value.get("error") if isinstance(value.get("error"), Mapping) else {}
+    msg = str(error.get("message") or "")
+    if "active run" in msg.lower() or "already has active" in msg.lower():
+        raise BridgeError(
+            HTTPStatus.CONFLICT,
+            "Agent has an active run",
+            error_type="server_error",
+            code="busy",
+        )
     status = int(error.get("status_code") or HTTPStatus.BAD_GATEWAY)
     # Cursor SDK sometimes stamps status_code=200 on failed runs; never
     # surface those as successful HTTP responses to OpenAI clients.

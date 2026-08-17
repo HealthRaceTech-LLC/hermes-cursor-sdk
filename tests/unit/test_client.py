@@ -127,8 +127,8 @@ def test_cancel_latest_run(client: CursorSDKClient) -> None:
 
 
 def test_session_ensure_and_send(client: CursorSDKClient, tmp_path: Path) -> None:
-    agent_id = client.session_ensure_local(cwd=tmp_path, session_key="session-a")
-    again = client.session_ensure_local(cwd=tmp_path, session_key="session-a")
+    agent_id, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-a")
+    again, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-a")
     result = client.session_send(session_key="session-a", prompt="continue", cwd=tmp_path)
 
     assert agent_id == again
@@ -138,7 +138,7 @@ def test_session_ensure_and_send(client: CursorSDKClient, tmp_path: Path) -> Non
 
 
 def test_session_send_close_deletes_session(client: CursorSDKClient, tmp_path: Path) -> None:
-    agent_id = client.session_ensure_local(cwd=tmp_path, session_key="session-close")
+    agent_id, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-close")
 
     result = client.session_send(
         session_key="session-close",
@@ -155,7 +155,7 @@ def test_session_send_close_deletes_session(client: CursorSDKClient, tmp_path: P
 def test_session_send_close_keeps_session_on_failure(
     client: CursorSDKClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    agent_id = client.session_ensure_local(cwd=tmp_path, session_key="session-fail")
+    agent_id, _ = client.session_ensure_local(cwd=tmp_path, session_key="session-fail")
 
     def fail_send(**_kwargs: object) -> None:
         raise RuntimeError("send failed")

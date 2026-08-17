@@ -13,9 +13,9 @@ from typing import Any
 
 from hermes_cursor_sdk.errors import AuthMissingError, ConfigurationError
 
-CONFIG_PATH = Path("~/.hermes/cursor-sdk/config.toml").expanduser()
-DEFAULT_STORE_DIR = Path("~/.hermes/cache/cursor-sdk/").expanduser()
-DEFAULT_BRIDGE_ENV_PATH = Path("~/.hermes/cursor-sdk/bridge.env").expanduser()
+CONFIG_PATH = Path("~/.hermes/cursor-sdk/config.toml")
+DEFAULT_STORE_DIR = Path("~/.hermes/cache/cursor-sdk/")
+DEFAULT_BRIDGE_ENV_PATH = Path("~/.hermes/cursor-sdk/bridge.env")
 
 BRIDGE_ENV_ALLOWLIST = {
     "CURSOR_API_KEY",

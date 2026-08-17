@@ -312,3 +312,56 @@ def test_model_selection_falls_back_to_positional_constructors(
 
     assert selection_id(selection) == "composer-2.5"
     assert selection_params(selection) == {"reasoning_effort": "high"}
+
+
+def test_map_reasoning_effort_maps_and_clamps() -> None:
+    from hermes_cursor_sdk.models import map_reasoning_effort
+
+    grok_entry = {
+        "id": "grok-4.6",
+        "parameters": {
+            "effort": {
+                "name": "effort",
+                "values": [
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "high"},
+                    {"value": "xhigh"},
+                ],
+            },
+            "fast": {"name": "fast", "values": [{"value": "false"}, {"value": "true"}]},
+        },
+    }
+
+    assert map_reasoning_effort(grok_entry, {"reasoning_effort": "max"}) == {"effort": "xhigh"}
+    assert map_reasoning_effort(grok_entry, {"reasoning_effort": "medium"}) == {"effort": "medium"}
+
+    gpt_entry = {
+        "id": "gpt-5.5",
+        "parameters": {
+            "reasoning": {
+                "name": "reasoning",
+                "values": [
+                    {"value": "none"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "high"},
+                    {"value": "extra-high"},
+                ],
+            },
+        },
+    }
+    assert map_reasoning_effort(gpt_entry, {"reasoning_effort": "max"}) == {
+        "reasoning": "extra-high"
+    }
+    assert map_reasoning_effort(gpt_entry, {"reasoning_effort": "xhigh"}) == {
+        "reasoning": "extra-high"
+    }
+
+    composer_entry = {
+        "id": "composer-2.5",
+        "parameters": {
+            "fast": {"name": "fast", "values": [{"value": "false"}, {"value": "true"}]},
+        },
+    }
+    assert map_reasoning_effort(composer_entry, {"reasoning_effort": "max"}) == {}

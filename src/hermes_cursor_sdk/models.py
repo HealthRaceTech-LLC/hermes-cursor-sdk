@@ -366,6 +366,96 @@ def _model_selection(model_id: str, params: Mapping[str, Any]) -> Any:
             return serialized
 
 
+EFFORT_ALIAS_MAP: dict[str, str] = {
+    "extra_high": "xhigh",
+    "extra-high": "xhigh",
+    "none": "minimal",
+}
+
+
+def map_reasoning_effort(
+    model_entry: Mapping[str, Any] | None, params: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Map reasoning_effort to model's effort/reasoning parameter and clamp values."""
+
+    if not params:
+        return {}
+
+    out = dict(params)
+    raw_effort = out.pop("reasoning_effort", None)
+    if raw_effort is None or model_entry is None:
+        return out
+
+    raw_val = str(raw_effort).strip().lower()
+
+    if isinstance(model_entry, Mapping):
+        param_defs = model_entry.get("parameters") or {}
+    else:
+        param_defs = getattr(model_entry, "parameters", None) or {}
+
+    if isinstance(param_defs, (list, tuple)):
+        param_map: dict[str, Any] = {}
+        for p in param_defs:
+            pid = getattr(p, "id", None) or (p.get("id") if isinstance(p, Mapping) else None)
+            if pid:
+                param_map[pid] = p
+        param_defs = param_map
+
+    target_key = None
+    if "effort" in param_defs:
+        target_key = "effort"
+    elif "reasoning" in param_defs:
+        target_key = "reasoning"
+    elif "reasoning_effort" in param_defs:
+        target_key = "reasoning_effort"
+
+    if not target_key:
+        return out
+
+    param_def = param_defs[target_key]
+    valid_values: list[str] = []
+
+    if isinstance(param_def, Mapping):
+        raw_vals = param_def.get("values") or []
+    else:
+        raw_vals = getattr(param_def, "values", None) or []
+
+    for v in raw_vals:
+        val_str = getattr(v, "value", None) or (
+            v.get("value") if isinstance(v, Mapping) else str(v)
+        )
+        if val_str:
+            valid_values.append(str(val_str).lower())
+
+    if not valid_values:
+        out[target_key] = raw_val
+        return out
+
+    if raw_val in valid_values:
+        out[target_key] = raw_val
+        return out
+
+    aliased = EFFORT_ALIAS_MAP.get(raw_val, raw_val)
+    if aliased in valid_values:
+        out[target_key] = aliased
+        return out
+
+    if raw_val in ("xhigh", "extra-high", "extra_high"):
+        for alt in ("xhigh", "extra-high", "high"):
+            if alt in valid_values:
+                out[target_key] = alt
+                return out
+
+    if raw_val == "max":
+        for alt in ("max", "xhigh", "extra-high", "high"):
+            if alt in valid_values:
+                out[target_key] = alt
+                return out
+
+    out[target_key] = valid_values[-1]
+    return out
+
+
 def resolve_model_selection(
     model: str | dict[str, Any] | None,
     params: Mapping[str, Any] | None,
@@ -380,5 +470,8 @@ def resolve_model_selection(
         requested_params = {**dict(model.get("params") or {}), **requested_params}
     else:
         model_id = str(model or default_model)
+    entry = _catalog_entry(catalog, model_id)
+    if entry is not None:
+        requested_params = map_reasoning_effort(entry, requested_params)
     _validate_params(model_id, requested_params, catalog)
     return _model_selection(model_id, requested_params)
